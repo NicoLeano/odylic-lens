@@ -121,16 +121,18 @@ function Cmd-Logs {
 }
 
 function Cmd-Help {
-@"
-  lens start              start API in background
-  lens stop               stop it
-  lens restart            stop + start
-  lens status             show pid + port state
-  lens update             git pull + reinstall + rebuild + restart
-  lens logs               tail the API log
-
-  Install dir: $LensDir  (override with ODYLIC_LENS_DIR=...)
-"@
+    # Use Write-Host instead of @"..."@ here-string because some Windows
+    # PowerShell 5.1 installs are picky about CR characters at the
+    # closing "@ terminator. Plain Write-Host calls have no such
+    # parsing edge cases.
+    Write-Host "  lens start              start API in background"
+    Write-Host "  lens stop               stop it"
+    Write-Host "  lens restart            stop + start"
+    Write-Host "  lens status             show pid + port state"
+    Write-Host "  lens update             git pull + reinstall + rebuild + restart"
+    Write-Host "  lens logs               tail the API log"
+    Write-Host ""
+    Write-Host "  Install dir: $LensDir  (override with ODYLIC_LENS_DIR=...)"
 }
 
 $cmd = if ($args.Count -gt 0) { $args[0] } else { "help" }

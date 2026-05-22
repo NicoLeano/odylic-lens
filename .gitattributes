@@ -1,0 +1,19 @@
+# Force LF line endings for files where it actually matters.
+#
+# Why this exists: Windows git defaults to `core.autocrlf=true` which
+# rewrites every text file's LF → CRLF at checkout. For PowerShell
+# scripts that contain `@"..."@` here-strings, the CRLF terminator
+# can trip Windows PowerShell 5.1's stricter parser and produce a
+# bogus "The string is missing the terminator" error. Pinning .ps1
+# (and the obviously-LF assets below) to LF avoids the conversion.
+
+# Scripts the cross-platform installer runs
+*.sh   text eol=lf
+*.ps1  text eol=lf
+
+# Windows batch files genuinely want CRLF (some Windows shells choke
+# on LF-only .cmd files), so let git default-detect on those.
+
+# Lock files + JSON are LF everywhere
+*.json     text eol=lf
+package-lock.json text eol=lf
