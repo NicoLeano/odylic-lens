@@ -60,10 +60,18 @@ _CSP = (
     # fails with a CSP violation in the console.
     "worker-src 'self' blob:; "
     "child-src 'self' blob:; "
-    # Facebook public-plugin iframes (post + video preview) used as a
-    # fallback in AdDetailPanel when the direct Meta CDN URL expires.
-    # Without this Chrome shows "This content is blocked" placeholder.
-    "frame-src https://www.facebook.com https://web.facebook.com; "
+    # Facebook iframes the preview panel embeds:
+    #   - www.facebook.com → public post/video plugins (fallback path).
+    #   - web.facebook.com → mirror for some regions.
+    #   - business.facebook.com → Meta's signed preview_iframe.php URL.
+    #     This is the iframe baked INSIDE Meta's preview HTML (the
+    #     /api/ads/preview response). Without it Chrome / Brave render
+    #     a "This content is blocked. Contact the site owner to fix the
+    #     issue." placeholder where the creative should be.
+    #   - *.facebook.com wildcard catches the long-tail subdomains Meta
+    #     occasionally rotates (e.g. ad-prod.facebook.com, l.facebook.com).
+    "frame-src https://www.facebook.com https://web.facebook.com "
+    "https://business.facebook.com https://*.facebook.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self' https://www.facebook.com"
