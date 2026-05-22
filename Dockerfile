@@ -1,5 +1,5 @@
 # Single-image build: bundles the web app into the FastAPI image and
-# serves both from port 3001. Good enough for a personal deploy on
+# serves both from port 8765. Good enough for a personal deploy on
 # Fly.io / Railway / Render. For local dev use the README's two-process
 # flow (Vite + uvicorn) instead — it gives you HMR.
 
@@ -26,5 +26,5 @@ COPY api/ /app/api/
 COPY --from=web /web/dist /app/web/dist
 
 WORKDIR /app/api
-EXPOSE 3001
+EXPOSE 8765
 CMD ["python", "main.py"]
