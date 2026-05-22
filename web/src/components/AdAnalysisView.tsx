@@ -2416,6 +2416,7 @@ export function AdAnalysisView({ brand, start, end, compareStart, compareEnd, sn
             <DownloadMenu
               gridRef={cardGridRef}
               ads={filteredAds}
+              selectedAds={checkedAds}
               metricDefs={metricDefs}
               brand={brand}
               chartMode={chartMode}
@@ -6055,10 +6056,15 @@ function VelocityScorecards({ ads, brand, selected, onToggle, thresholds: extern
 // ---------------------------------------------------------------------------
 
 function DownloadMenu({
-  gridRef, ads, metricDefs, brand, chartMode,
+  gridRef, ads, selectedAds, metricDefs, brand, chartMode,
 }: {
   gridRef: React.RefObject<HTMLDivElement | null>
   ads: AdCreative[]
+  /** Optional. If non-empty, every download path (PNG / ZIP / CSV /
+   *  PDF) operates on this subset rather than the full filtered grid.
+   *  Lets the user check 3 cards and grab "just those" instead of
+   *  the whole 200-ad view. */
+  selectedAds?: AdCreative[]
   metricDefs: MetricDef[]
   brand?: string
   chartMode: string
@@ -6067,6 +6073,25 @@ function DownloadMenu({
   const [busy, setBusy] = useState<'png' | 'zip' | 'csv' | null>(null)
   const [zipProgress, setZipProgress] = useState<{ done: number; total: number } | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  // Toast that confirms a successful download. Bottom-right of viewport,
+  // auto-dismisses after 4s. The user reported the previous PNG download
+  // gave no confirmation and they couldn't tell where the file went —
+  // this toast names the saved filename + reminds them of the browser's
+  // Downloads folder so they don't have to go hunting.
+  const [toast, setToast] = useState<string | null>(null)
+  useEffect(() => {
+    if (!toast) return
+    const t = window.setTimeout(() => setToast(null), 4000)
+    return () => window.clearTimeout(t)
+  }, [toast])
+
+  // Effective set: use the selection when one exists, else the full
+  // filtered view. selecting just two cards now means only those two
+  // land in the PNG / ZIP / CSV, which matches what every screenshot
+  // / batch tool does and what the user expected.
+  const effectiveAds = (selectedAds && selectedAds.length > 0) ? selectedAds : ads
+  const isSelection = !!(selectedAds && selectedAds.length > 0)
+  const countLabel = `${effectiveAds.length} ${isSelection ? 'selected' : 'shown'}`
 
   useEffect(() => {
     if (!open) return
@@ -6106,7 +6131,9 @@ function DownloadMenu({
         filter: (node) => !(node instanceof HTMLElement && node.classList.contains('atelier-zoom-range')),
       })
       const blob = await (await fetch(dataUrl)).blob()
-      triggerDownload(blob, `${baseName}-grid.png`)
+      const filename = `${baseName}-grid${isSelection ? `-${effectiveAds.length}sel` : ''}.png`
+      triggerDownload(blob, filename)
+      setToast(`Saved ${filename} → check your Downloads folder`)
     } finally {
       setBusy(null)
       setOpen(false)
@@ -6117,14 +6144,14 @@ function DownloadMenu({
 
   const downloadZip = async () => {
     setBusy('zip')
-    setZipProgress({ done: 0, total: ads.length })
+    setZipProgress({ done: 0, total: effectiveAds.length })
     try {
       const zip = new JSZip()
       let done = 0
       // Sequential rather than parallel. we don't want to hammer Meta's
       // CDN with 500 concurrent fetches. ~5 in flight at a time would be
       // a nice middle ground but a simple loop is fine for a few hundred.
-      for (const ad of ads) {
+      for (const ad of effectiveAds) {
         const url = ad.image_url_hd || ad.image_url || ad.thumbnail_url
         if (url) {
           try {
@@ -6140,10 +6167,12 @@ function DownloadMenu({
           }
         }
         done += 1
-        setZipProgress({ done, total: ads.length })
+        setZipProgress({ done, total: effectiveAds.length })
       }
       const blob = await zip.generateAsync({ type: 'blob' })
-      triggerDownload(blob, `${baseName}-images.zip`)
+      const filename = `${baseName}-images${isSelection ? `-${effectiveAds.length}sel` : ''}.zip`
+      triggerDownload(blob, filename)
+      setToast(`Saved ${filename} (${effectiveAds.length} ad${effectiveAds.length === 1 ? '' : 's'}) → check your Downloads folder`)
     } finally {
       setBusy(null)
       setZipProgress(null)
@@ -6197,7 +6226,7 @@ function DownloadMenu({
       }
       const lines: string[] = []
       lines.push(headerKeys.map(h => escape(h.label)).join(','))
-      for (const ad of ads) {
+      for (const ad of effectiveAds) {
         const row = headerKeys.map(h => {
           if (h.key === '__ad_id') return escape(ad.ad_id || '')
           if (h.key === '__ad_name') return escape(ad.ad_name || '')
@@ -6211,7 +6240,9 @@ function DownloadMenu({
         lines.push(row.join(','))
       }
       const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
-      triggerDownload(blob, `${baseName}-table.csv`)
+      const filename = `${baseName}-table${isSelection ? `-${effectiveAds.length}sel` : ''}.csv`
+      triggerDownload(blob, filename)
+      setToast(`Saved ${filename} (${effectiveAds.length} row${effectiveAds.length === 1 ? '' : 's'}) → check your Downloads folder`)
     } finally {
       setBusy(null)
       setOpen(false)
@@ -6224,18 +6255,34 @@ function DownloadMenu({
     <div className="relative" ref={rootRef}>
       <button
         onClick={() => setOpen(o => !o)}
-        disabled={!!busy || ads.length === 0}
-        className="glass glass-hover px-2 py-1 rounded-full text-[11px] flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
-        title="Download current view"
+        disabled={!!busy || effectiveAds.length === 0}
+        className={`glass glass-hover px-2 py-1 rounded-full text-[11px] flex items-center gap-1 whitespace-nowrap disabled:opacity-50 ${
+          isSelection ? 'ring-1 ring-[#B7410E]/50' : ''
+        }`}
+        title={
+          isSelection
+            ? `Download the ${effectiveAds.length} selected ad${effectiveAds.length === 1 ? '' : 's'}`
+            : `Download the ${effectiveAds.length} ad${effectiveAds.length === 1 ? '' : 's'} on screen`
+        }
       >
         {busy ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
         {busy === 'zip' && zipProgress
           ? `Zipping ${zipProgress.done}/${zipProgress.total}`
-          : 'Download'}
+          : `Download (${countLabel})`}
         <ChevronDown size={9} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-40 w-[240px] bg-white rounded-lg shadow-[0_8px_28px_-4px_rgba(0,0,0,0.18)] border border-black/[0.08] overflow-hidden">
+        <div className="absolute right-0 top-full mt-1 z-40 w-[260px] bg-white rounded-lg shadow-[0_8px_28px_-4px_rgba(0,0,0,0.18)] border border-black/[0.08] overflow-hidden">
+          {/* Scope strip — explicit about what every export operates on
+              so the user doesn't have to guess whether their checkbox
+              selection took effect. */}
+          <div className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-medium border-b border-black/[0.05] ${
+            isSelection ? 'text-[#B7410E] bg-[#B7410E]/[0.06]' : 'text-text-muted bg-black/[0.02]'
+          }`}>
+            {isSelection
+              ? `Exporting ${effectiveAds.length} selected ad${effectiveAds.length === 1 ? '' : 's'}`
+              : `Exporting all ${effectiveAds.length} ad${effectiveAds.length === 1 ? '' : 's'} on screen`}
+          </div>
           <button
             onClick={downloadPng}
             disabled={pngDisabled}
@@ -6256,7 +6303,7 @@ function DownloadMenu({
             <FolderArchive size={13} className="mt-0.5 text-text-secondary shrink-0" />
             <div className="min-w-0">
               <div className="text-[12px] font-medium text-text-primary">All assets (ZIP)</div>
-              <div className="text-[10.5px] text-text-muted leading-tight">{ads.length} image{ads.length === 1 ? '' : 's'} as individual files</div>
+              <div className="text-[10.5px] text-text-muted leading-tight">{effectiveAds.length} image{effectiveAds.length === 1 ? '' : 's'} as individual files</div>
             </div>
           </button>
           <button
@@ -6267,7 +6314,7 @@ function DownloadMenu({
             <FileSpreadsheet size={13} className="mt-0.5 text-text-secondary shrink-0" />
             <div className="min-w-0">
               <div className="text-[12px] font-medium text-text-primary">Table (CSV) · with AI</div>
-              <div className="text-[10.5px] text-text-muted leading-tight">{ads.length} row{ads.length === 1 ? '' : 's'} · picked metrics + sentiment, angle, persona, template, funnel, awareness</div>
+              <div className="text-[10.5px] text-text-muted leading-tight">{effectiveAds.length} row{effectiveAds.length === 1 ? '' : 's'} · picked metrics + sentiment, angle, persona, template, funnel, awareness</div>
             </div>
           </button>
           <button
@@ -6288,6 +6335,16 @@ function DownloadMenu({
               <div className="text-[10.5px] text-text-muted leading-tight">Opens print dialog · save as PDF</div>
             </div>
           </button>
+        </div>
+      )}
+      {toast && (
+        <div
+          className="fixed bottom-5 right-5 z-[10001] glass rounded-lg px-3 py-2 text-[11px] text-text-primary shadow-[0_8px_28px_-4px_rgba(0,0,0,0.18)] border border-black/[0.08] max-w-[420px] flex items-start gap-2"
+          role="status"
+          aria-live="polite"
+        >
+          <span style={{ color: '#2d8a4e' }} aria-hidden>✓</span>
+          <span>{toast}</span>
         </div>
       )}
     </div>
