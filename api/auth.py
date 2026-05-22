@@ -88,7 +88,9 @@ def _app_secret() -> str:
 
 
 def _redirect_uri() -> str:
-    return _credentials().get("OAUTH_REDIRECT_URI") or "http://localhost:3001/api/auth/callback"
+    # Default: the API listens on 8765 and the OAuth callback is on /api/.
+    # Earlier default was :3001 which was a leftover from the Atelier port.
+    return _credentials().get("OAUTH_REDIRECT_URI") or "http://localhost:8765/api/auth/callback"
 
 
 def _credentials_configured() -> bool:
@@ -103,7 +105,12 @@ class ConfigureRequest(BaseModel):
 
 
 def _web_origin() -> str:
-    return os.environ.get("WEB_ORIGIN", "http://localhost:5173")
+    # Where the OAuth callback bounces the browser after a successful
+    # connect. In a production install the API serves the prebuilt SPA
+    # on :8765, so the web origin IS :8765. We previously defaulted to
+    # :5173 (Vite dev) which left fresh installs with a "this site can't
+    # be reached" after OAuth completed.
+    return os.environ.get("WEB_ORIGIN", "http://localhost:8765")
 
 
 def current_user_id(session_id: Optional[str]) -> Optional[str]:

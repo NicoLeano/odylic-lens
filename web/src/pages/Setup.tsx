@@ -16,19 +16,24 @@ import { IntegrationCard } from "./ApiSettings";
  *   - Dev mode being indefinitely sustainable for self-hosted
  */
 
+// Short labels keep every pill the same shape — the stepper is a
+// progress indicator, not a place to fit a full sentence.
 const STEPS = [
   { id: 1, title: "Prerequisites" },
-  { id: 2, title: "Create the Meta App" },
-  { id: 3, title: "Verify permissions" },
-  { id: 4, title: "Paste credentials" },
+  { id: 2, title: "Create app" },
+  { id: 3, title: "Permissions" },
+  { id: 4, title: "Credentials" },
   { id: 5, title: "Connect" },
-  { id: 6, title: "Optional integrations" },
+  { id: 6, title: "Integrations" },
 ];
 
 export default function Setup({ auth }: { auth: AuthStatus | null }) {
   const [step, setStep] = useState(() => (auth?.app_configured ? 5 : 1));
   const [redirectUri, setRedirectUri] = useState(
-    auth?.redirect_uri || `${window.location.protocol}//${window.location.hostname}:3001/api/auth/callback`
+    // Production-mode default: same-origin API on :8765. The hardcoded
+    // :3001 fallback was a leftover from the Atelier port and caused
+    // users to register a callback that didn't exist.
+    auth?.redirect_uri || `${window.location.protocol}//${window.location.hostname}:8765/api/auth/callback`
   );
 
   return (
@@ -123,20 +128,29 @@ function Stepper({ step, setStep }: { step: number; setStep: (n: number) => void
         const isDone = s.id < step;
         const color = isActive ? "var(--color-text-primary)" : isDone ? "var(--color-text-secondary)" : "var(--color-text-muted)";
         return (
-          <li key={s.id} style={{ minWidth: 0 }}>
+          <li key={s.id} style={{ minWidth: 0, display: "flex" }}>
             <button
               onClick={() => setStep(s.id)}
               style={{
-                width: "100%", padding: "8px 12px",
+                // Fixed pill height + single-line text so every step has
+                // the same shape regardless of label length. min-width: 0
+                // on the <li> + overflow: hidden + textOverflow ellipsis
+                // means if the label is too long for the cell it
+                // truncates with "…" rather than wrapping to a second row.
+                width: "100%", height: 32, padding: "0 14px",
                 background: isActive ? "rgba(255,255,255,0.75)" : isDone ? "rgba(255,255,255,0.45)" : "transparent",
                 color, border: "1px solid rgba(255,255,255,0.45)", borderRadius: 9999,
                 fontSize: 11, fontWeight: 500, textAlign: "left", fontFamily: "inherit",
                 backdropFilter: "blur(40px) saturate(180%)", WebkitBackdropFilter: "blur(40px) saturate(180%)",
                 transition: "background 0.15s ease, color 0.15s ease", cursor: "pointer",
+                display: "flex", alignItems: "center",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
               }}
             >
-              <span style={{ opacity: 0.7 }}>{isDone ? "✓ " : `${s.id}. `}</span>
-              {s.title}
+              <span style={{ opacity: 0.7, marginRight: 4, flexShrink: 0 }}>
+                {isDone ? "✓" : `${s.id}.`}
+              </span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</span>
             </button>
           </li>
         );
