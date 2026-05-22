@@ -45,6 +45,27 @@ export default function Setup({ auth }: { auth: AuthStatus | null }) {
       padding: "48px 24px 64px",
     }}>
       <header style={{ marginBottom: 24 }}>
+        {/* Odylic lockup. mirrors the Landing page wordmark so onboarding
+            feels like a continuation of the brand, not a separate utility
+            page. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18 }}>
+          <img
+            src="/odylic-logo.png"
+            alt="Odylic"
+            style={{ height: 36, display: "block" }}
+          />
+          <span style={{
+            fontFamily: "'Roboto', sans-serif",
+            fontWeight: 100,
+            fontSize: 22,
+            letterSpacing: "0.01em",
+            color: "var(--color-text-muted)",
+            lineHeight: 1,
+            marginTop: 6,
+          }}>
+            lens
+          </span>
+        </div>
         <div className="label" style={{ marginBottom: 8 }}>Onboarding</div>
         <h1 style={{ marginBottom: 8 }}>Connect Meta to Odylic Lens</h1>
         <p style={{ color: "var(--color-text-secondary)", fontSize: 13, margin: 0 }}>
@@ -83,13 +104,26 @@ export default function Setup({ auth }: { auth: AuthStatus | null }) {
 
 function Stepper({ step, setStep }: { step: number; setStep: (n: number) => void }) {
   return (
-    <ol style={{ display: "flex", gap: 6, listStyle: "none", padding: 0, margin: 0, paddingBottom: 16, flexWrap: "wrap" }}>
+    // Use grid instead of flex-wrap so every pill is the same width and
+    // a lonely pill on the last row (e.g. "6. Optional integrations" when
+    // 5+1 wraps) doesn't stretch into a "massive bar" filling the row.
+    // auto-fit + minmax keeps the pills compact on narrow viewports
+    // and lays them out 1-row on wide ones.
+    <ol style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+      gap: 6,
+      listStyle: "none",
+      padding: 0,
+      margin: 0,
+      paddingBottom: 16,
+    }}>
       {STEPS.map((s) => {
         const isActive = s.id === step;
         const isDone = s.id < step;
         const color = isActive ? "var(--color-text-primary)" : isDone ? "var(--color-text-secondary)" : "var(--color-text-muted)";
         return (
-          <li key={s.id} style={{ flex: "1 1 140px" }}>
+          <li key={s.id} style={{ minWidth: 0 }}>
             <button
               onClick={() => setStep(s.id)}
               style={{

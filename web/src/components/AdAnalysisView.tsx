@@ -5333,11 +5333,18 @@ function CustomDashboardView({ ads, chartAds, metricDefs, brand, onOpen, velocit
       )
     }
     if (key === 'top_grid') {
-      // Show every picked metric on each tile (capped to 3 for layout)
-      // so the widget mirrors the mosaic-view affordance instead of
-      // hard-coding ROAS only. Each tile also gets the same prior-period
-      // delta chip the cards + table show when compare is active.
-      const showMetrics = metricDefs.slice(0, 3)
+      // User feedback: dashboard top-performers used to render a bespoke
+      // tile (aspect-square + 3 horizontal metric rows) that looked
+      // nothing like the Mosaic/Creative-grid card. They wanted these to
+      // be "literally the same thing." We now reuse the exact AdCard
+      // component the mosaic view uses — same 4:5 image area, same
+      // status dot, same compact metric grid, same hover lift. The only
+      // difference is the checkbox is a no-op here (dashboard doesn't
+      // build chart selections).
+      const tileMetrics = metricDefs.filter(m => m.format !== 'text' && !m.analysisField)
+      const tileMetricSet: MetricDef[] = tileMetrics.length
+        ? tileMetrics
+        : (DEFAULT_CARD_METRIC_KEYS.map(k => METRICS_BY_KEY[k]).filter(Boolean) as MetricDef[])
       return (
         <div>
           <div className="text-[10px] uppercase tracking-widest text-text-muted font-medium mb-2">
@@ -5345,42 +5352,16 @@ function CustomDashboardView({ ads, chartAds, metricDefs, brand, onOpen, velocit
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
             {top6.map(a => (
-              <button
+              <AdCard
                 key={a.ad_id}
+                ad={a}
+                isChecked={false}
+                onToggle={() => { /* dashboard tiles don't drive chart selection */ }}
                 onClick={() => onOpen(a.ad_id)}
-                className="glass glass-hover rounded-lg overflow-hidden flex flex-col text-left"
-                title={a.ad_name || a.ad_id}
-              >
-                <div className="aspect-square overflow-hidden">
-                  <Thumbnail ad={a} brand={brand} />
-                </div>
-                <div className="px-2 pt-1.5 pb-2 flex flex-col gap-0.5">
-                  <div className="text-[10px] text-text-muted truncate">{a.ad_name || a.ad_id}</div>
-                  {showMetrics.length === 0 ? (
-                    <div className="text-[12px] font-medium tabular-nums" style={{ color: '#B7410E' }}>
-                      {Number(a.roas || 0).toFixed(2)}x
-                    </div>
-                  ) : (
-                    showMetrics.map((m, i) => {
-                      const raw = (a as any)[m.key]
-                      const prev = (a as any)[`prev_${m.key}`]
-                      const accent = i === 0
-                      return (
-                        <div key={String(m.key)} className="flex items-baseline justify-between gap-1">
-                          <span className="text-[9px] uppercase tracking-wider text-text-muted truncate">{m.label}</span>
-                          <span
-                            className={`text-[11px] tabular-nums font-medium inline-flex items-baseline ${accent ? '' : 'text-text-primary'}`}
-                            style={accent ? { color: '#B7410E' } : undefined}
-                          >
-                            <span className="truncate">{fmtMetric(raw, m)}</span>
-                            <DeltaChip current={Number(raw)} prev={prev} metricKey={String(m.key)} />
-                          </span>
-                        </div>
-                      )
-                    })
-                  )}
-                </div>
-              </button>
+                metricCount={6}
+                metricDefs={tileMetricSet}
+                brand={brand}
+              />
             ))}
             {top6.length === 0 && (
               <div className="col-span-full text-[11px] text-text-muted text-center py-6">
