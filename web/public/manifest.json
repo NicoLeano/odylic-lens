@@ -1,0 +1,22 @@
+{
+  "name": "Atelier",
+  "short_name": "Atelier",
+  "description": "Atelier — unified media buying workspace",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f2ea",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/atlier-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

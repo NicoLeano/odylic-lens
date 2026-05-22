@@ -1,0 +1,550 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #f2f0ed;
+  --color-surface-raised: #ffffff;
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #555555;
+  --color-text-muted: #999999;
+  --color-accent: #1a1a1a;
+  --color-accent-hover: #333333;
+  --color-success: #2d8a4e;
+  --color-warning: #c47a15;
+  --color-error: #c43a31;
+  --color-glass-border: rgba(255, 255, 255, 0.18);
+  --font-display: 'Source Serif 4', Georgia, 'Times New Roman', Times, serif;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+#root {
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(200, 180, 160, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(160, 180, 210, 0.12) 0%, transparent 50%),
+    radial-gradient(ellipse at 60% 80%, rgba(180, 200, 170, 0.10) 0%, transparent 50%);
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
+  font-weight: 500;
+  font-optical-sizing: auto;
+  /* Tabular lining figures so numbers in tables/tiles align column-wise. */
+  font-feature-settings: 'tnum', 'lnum';
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  /* position intentionally omitted — inherit from whatever Tailwind util
+     (.absolute, .fixed, .relative) the consumer applied. Using `relative`
+     here hijacked position:absolute on .absolute.glass combos. */
+  isolation: isolate;
+}
+
+.recharts-wrapper,
+.recharts-wrapper *,
+.recharts-surface,
+.recharts-surface * {
+  outline: none !important;
+}
+
+/* === DESIGN SYSTEM ====================================================
+   Standard tokens used across every tab. Anything that doesn't read off
+   these utilities is breaking the system. */
+
+/* Page-level container (chart panels, big section wrappers). MAX glassmorphism
+   with shifting red/green gradient highlights, layered specular flare, and a
+   slow subtle animated hue drift so the surface feels alive. */
+.atelier-section {
+  position: relative;
+  border-radius: 24px;
+  padding: 24px;
+  overflow: hidden;
+  background:
+    linear-gradient(140deg,
+      rgba(255, 255, 255, 0.55) 0%,
+      rgba(255, 255, 255, 0.35) 50%,
+      rgba(255, 255, 255, 0.45) 100%);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    0 24px 60px -24px rgba(0, 0, 0, 0.18),
+    0 4px 12px -4px rgba(0, 0, 0, 0.06),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.7);
+  isolation: isolate;
+}
+/* Warm (deep-orange) glow → top-left specular highlight. */
+.atelier-section::before {
+  content: '';
+  position: absolute;
+  top: -120px;
+  left: -120px;
+  width: 320px;
+  height: 320px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(232, 122, 45, 0.18) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  animation: atelier-aurora 18s ease-in-out infinite alternate;
+}
+/* Cool (green) glow → bottom-right counter-tint. */
+.atelier-section::after {
+  content: '';
+  position: absolute;
+  bottom: -120px;
+  right: -120px;
+  width: 320px;
+  height: 320px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(45, 138, 78, 0.14) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  animation: atelier-aurora 22s ease-in-out infinite alternate-reverse;
+}
+.atelier-section > * { position: relative; z-index: 1; }
+
+@keyframes atelier-aurora {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0.85; }
+  50%  { transform: translate(20px, -10px) scale(1.08); opacity: 1; }
+  100% { transform: translate(-15px, 15px) scale(0.95); opacity: 0.75; }
+}
+
+/* ---------------------------------------------------------------------
+   Privacy / screen-share mode
+   ---------------------------------------------------------------------
+   Toggled via the tiny dot at the bottom-right of the app (or ⌘⇧P).
+   When `[data-privacy-mode="on"]` is on the <html> element, every
+   number-bearing surface is blurred so a screen-share viewer can see
+   the layout but not the values. Brand thumbnails on cards/tables are
+   blurred too so client identities aren't readable.
+
+   Strategy: blur instead of hide. Layout stays intact, dimensions stay
+   the same, and a quick toggle reveals everything again. The blur is
+   strong enough (8-10px) that even a zoomed screenshot can't
+   reverse-engineer the original glyphs.
+*/
+[data-privacy-mode="on"] .tabular-nums,
+[data-privacy-mode="on"] .kpi-number,
+[data-privacy-mode="on"] [data-redact],
+[data-privacy-mode="on"] .recharts-wrapper,
+[data-privacy-mode="on"] .recharts-surface {
+  filter: blur(7px);
+  user-select: none;
+  pointer-events: none;
+}
+/* Creative thumbnails on the Ad Analysis grid are exempt — the user
+   needs to see the ads themselves during a screen share. Sentiment
+   pills are also exempt (they're qualitative, not sensitive numbers).
+   Both stay crisp via explicit no-blur rules; metrics inside the same
+   card still blur because they use .tabular-nums. */
+[data-privacy-mode="on"] [data-vcard] img,
+[data-privacy-mode="on"] [data-keep-visible],
+[data-privacy-mode="on"] [data-keep-visible] * {
+  filter: none !important;
+  user-select: auto;
+}
+[data-privacy-mode="on"] [data-redact-strong],
+[data-privacy-mode="on"] .atelier-section .font-display.tabular-nums {
+  filter: blur(10px);
+  user-select: none;
+}
+/* Subtle visual confirmation the mode is on — a faint orange ring
+   around the viewport. Easy to spot from the user's side, easy to
+   miss from a recipient's perspective if they're focused on content. */
+html[data-privacy-mode="on"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  box-shadow: inset 0 0 0 2px rgba(183, 65, 14, 0.18);
+}
+
+/* Chat markdown — give the assistant a real type system: heading
+   hierarchy, weight contrast, table polish, blockquote treatment,
+   and well-spaced lists. Mirrors the dashboard's overall aesthetic
+   (Atelier serif for display, system stack for body). */
+.chat-md { font-size: 13px; line-height: 1.55; }
+.chat-md > :first-child { margin-top: 0; }
+.chat-md > :last-child { margin-bottom: 0; }
+.chat-md p { margin: 0.4rem 0; }
+.chat-md strong { font-weight: 600; color: var(--text-primary, #18181b); }
+.chat-md em { font-style: italic; color: var(--text-secondary, #4b5563); }
+.chat-md hr { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 0.75rem 0; }
+
+.chat-md h1 { font-family: var(--font-display); font-size: 18px; font-weight: 500; letter-spacing: -0.01em; margin: 0.75rem 0 0.35rem; }
+.chat-md h2 { font-family: var(--font-display); font-size: 16px; font-weight: 500; letter-spacing: -0.01em; margin: 0.65rem 0 0.3rem; }
+.chat-md h3 { font-size: 14px; font-weight: 600; margin: 0.55rem 0 0.25rem; }
+.chat-md h4 { font-size: 13px; font-weight: 600; margin: 0.5rem 0 0.2rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted, #6b7280); }
+
+.chat-md ul, .chat-md ol { margin: 0.4rem 0; padding-left: 1.25rem; }
+.chat-md ul { list-style: disc; }
+.chat-md ol { list-style: decimal; }
+.chat-md li { margin: 0.15rem 0; }
+.chat-md li > p { margin: 0; }
+
+.chat-md blockquote {
+  margin: 0.5rem 0;
+  padding: 0.35rem 0.75rem;
+  border-left: 2px solid rgba(183,65,14,0.45);
+  background: rgba(183,65,14,0.04);
+  color: var(--text-secondary, #4b5563);
+  font-style: italic;
+}
+
+/* Tables — full-width, hairline rules, eyebrow header, tabular nums in
+   cells. Override react-markdown component classes so they read like
+   a designed table, not a markdown dump. */
+.chat-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chat-md thead { border-bottom: 1px solid rgba(0,0,0,0.10); }
+.chat-md th {
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+  color: var(--text-muted, #6b7280);
+}
+.chat-md td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+  color: var(--text-secondary, #374151);
+}
+.chat-md tr:last-child td { border-bottom: none; }
+.chat-md td:first-child, .chat-md th:first-child { padding-left: 0; }
+.chat-md td:last-child, .chat-md th:last-child { padding-right: 0; }
+
+/* Inline + fenced code differentiation. Inline gets a subtle pill;
+   fenced gets a real block with monospace + horizontal scroll. */
+.chat-md code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
+}
+.chat-md p code, .chat-md li code {
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.05);
+  font-size: 11.5px;
+}
+.chat-md pre {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.chat-md pre code { background: transparent; padding: 0; font-size: inherit; }
+
+/* Pulsing shimmer placeholder for ad card thumbnails while the image
+   loads — soft cream→light-gray gradient drifting across the tile. */
+.ac-thumb-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.04) 0%,
+    rgba(0, 0, 0, 0.10) 40%,
+    rgba(0, 0, 0, 0.04) 80%
+  );
+  background-size: 200% 100%;
+  animation: ac-thumb-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes ac-thumb-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* KPI tile — smaller card, used for the 4-tile rows above charts. Same
+   glass surface as .glass but with consistent radius/padding/min-height. */
+.atelier-tile {
+  position: relative;
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow:
+    0 8px 24px -12px rgba(0, 0, 0, 0.10),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.65);
+  isolation: isolate;
+}
+
+/* Page hierarchy fonts — apply via classes so every tab leads with the
+   same h2 size and the same kpi-number / section-title sizes. */
+.atelier-h2 {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.atelier-section-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.atelier-kpi-number {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-feature-settings: 'tnum', 'lnum';
+  line-height: 1.1;
+}
+.atelier-kpi-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+.atelier-kpi-sub {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+/* Standard pill button — every action button across every tab. */
+.atelier-pill {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 9999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.atelier-pill:hover {
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--color-text-primary);
+}
+
+.glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.25), transparent 60%);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.glass-hover:hover {
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+}
+
+/* Force all dropdown panels to overlay, never push content.
+   Sits above the sidebar brand-menu popover (z=10001) so pill dropdowns
+   always render on top when both happen to be open. */
+.dropdown-panel {
+  position: absolute !important;
+  top: calc(100% + 2px) !important;
+  left: 0;
+  margin-top: 0;
+  z-index: 10100 !important;
+}
+
+/* Each pill wrapper (`.relative.flex-shrink-0`) is its own stacking
+   context. A child popover's ``z-index: 10100`` only wins inside its
+   own context — siblings' pill text was rendering ON TOP of the
+   popover. Using :has() to elevate the wrapper itself when it contains
+   an open dropdown-panel fixes this globally without touching JSX. */
+.relative:has(> .dropdown-panel),
+.relative:has(> .dropdown-panel *) {
+  z-index: 10101;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+
+/* Atelier card-grid zoom slider — light gray track, small muted thumb. */
+.atelier-zoom-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 9999px;
+}
+.atelier-zoom-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 12px;
+  width: 12px;
+  border-radius: 9999px;
+  background: #999999;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  margin-top: -4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.atelier-zoom-range::-webkit-slider-thumb:hover {
+  background: #555555;
+}
+.atelier-zoom-range::-moz-range-track {
+  height: 4px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 9999px;
+}
+.atelier-zoom-range::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 9999px;
+  background: #999999;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+.atelier-zoom-range:focus {
+  outline: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Lens onboarding pages (Landing, Setup, ApiSettings) — shim classes.
+ * These were custom Lens primitives that didn't exist in Atelier's CSS
+ * because Atelier uses Tailwind utilities for the equivalents. Keeping
+ * them as a separate concern so future strip-downs don't touch them.
+ * ───────────────────────────────────────────────────────────────────── */
+
+.hero {
+  max-width: 720px;
+  margin: 0 auto;
+  text-align: center;
+  padding: 64px 24px 40px;
+}
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: 48px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  margin: 0 0 16px;
+}
+.hero .tagline {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  margin: 0 0 32px;
+}
+
+.label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.muted { color: var(--color-text-muted); }
+
+.btn {
+  background: var(--color-text-primary);
+  color: #ffffff;
+  border: none;
+  border-radius: 9999px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-decoration: none;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn:hover:not(:disabled) { background: var(--color-accent-hover); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn.secondary {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  color: var(--color-text-secondary);
+}
+.btn.secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-primary);
+}
+
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.row { display: flex; gap: 12px; align-items: center; }
+
+/* Lens-only auto-fit grid for the Landing feature row. Scoped under
+ * `.lens-grid` so it doesn't collide with Tailwind's `.grid` utility —
+ * the Atelier CA stack uses `grid grid-cols-2` extensively, and my
+ * original `.grid` override silently broke every 2-column form layout
+ * (BrandSettingsView's Brand Identity card was rendering 3 columns and
+ * falling off the page). */
+.lens-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.flag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.flag.warn,
+.flag.error    { background: rgba(196, 58, 49, 0.10); color: var(--color-error); }
+.flag.info     { background: rgba(38, 100, 168, 0.10); color: #2664a8; }
+.flag.ok,
+.flag.good     { background: rgba(45, 138, 78, 0.12); color: var(--color-success); }
+
+.empty-state {
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--color-text-secondary);
+}
+.empty-state h3 { color: var(--color-text-primary); margin-bottom: 8px; }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.status-pill.active { background: rgba(45, 138, 78, 0.10); color: var(--color-success); }
+.status-pill.paused { background: rgba(196, 122, 21, 0.10); color: var(--color-warning); }
+.status-pill.other  { background: rgba(0, 0, 0, 0.05); color: var(--color-text-muted); }

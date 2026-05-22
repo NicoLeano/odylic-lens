@@ -1,0 +1,65 @@
+# Secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# Local data
+*.db
+*.db-journal
+.odylic-lens/
+
+# Runtime caches written by the API process. These contain
+# brand-specific data (analyses, creatives, transcripts, saved
+# boards, thumbnails) that must never ship to git on a fresh
+# `git add .`. Each is auto-rebuilt by the API on first use.
+api/ad_analysis_cache.json
+api/ad_scripts_cache.json
+api/ad_comments_analysis.json
+api/comments_analysis.json
+api/creative_sentiment_cache.json
+api/boards.json
+api/ads_reports.json
+api/creatives_cache.json
+api/video_meta_cache.json
+api/post_thumb_collisions.json
+api/image_cache/
+api/video_cache/
+api/reports/
+api/*.tmp
+api/lens.db
+api/lens.db-journal
+api/.run/
+
+# Test downloads + scratch
+/tmp/dl-smoke/
+
+# Build artifacts
+api/odylic_lens_api.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+web/dist/
+.vite/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+.claude/
+*.swp
+*~
+
+# Logs
+*.log
+.atelier_api.log

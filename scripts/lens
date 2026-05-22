@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# `lens` CLI. Installed by install.sh into /usr/local/bin (or ~/.local/bin)
+# so users can drive the app from any terminal:
+#   lens start          start API + web in the background
+#   lens stop           stop both
+#   lens status         report pid + port state
+#   lens update         git pull + re-install deps + restart
+#   lens logs [api|web] tail one of the running log files
+#
+# All state lives in $LENS_DIR/.run/ (pid + log files). Idempotent calls
+# are safe. lens start twice just re-kicks the servers.
+set -e
+LENS_DIR="${ODYLIC_LENS_DIR:-$HOME/odylic-lens}"
+RUN="$LENS_DIR/.run"
+mkdir -p "$RUN"
+
+cmd="${1:-help}"
+
+_alive() {
+  local f="$1"
+  [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null
+}
+
+_start() {
+  if _alive "$RUN/api.pid"; then
+    echo "  api already running (pid $(cat "$RUN/api.pid"))"
+  else
+    (cd "$LENS_DIR/api" && nohup ./venv/bin/python main.py > "$RUN/api.log" 2>&1 &
+      echo $! > "$RUN/api.pid")
+    echo "  api → http://localhost:8765"
+  fi
+  if _alive "$RUN/web.pid"; then
+    echo "  web already running (pid $(cat "$RUN/web.pid"))"
+  else
+    (cd "$LENS_DIR/web" && nohup npm run dev > "$RUN/web.log" 2>&1 &
+      echo $! > "$RUN/web.pid")
+    echo "  web → http://localhost:5173"
+  fi
+}
+
+_stop() {
+  for p in api web; do
+    if _alive "$RUN/$p.pid"; then
+      kill "$(cat "$RUN/$p.pid")" 2>/dev/null && echo "  $p stopped"
+    fi
+    rm -f "$RUN/$p.pid"
+  done
+}
+
+_status() {
+  for p in api web; do
+    if _alive "$RUN/$p.pid"; then
+      echo "  $p: running (pid $(cat "$RUN/$p.pid"))"
+    else
+      echo "  $p: stopped"
+    fi
+  done
+  # Show which ports are bound regardless
+  for port in 8765 5173; do
+    pid=$(lsof -iTCP:$port -sTCP:LISTEN -t 2>/dev/null | head -1)
+    [ -n "$pid" ] && echo "  port $port: pid $pid"
+  done
+}
+
+_update() {
+  cd "$LENS_DIR"
+  echo "  fetching..."
+  git fetch --quiet
+  local local_rev remote_rev
+  local_rev=$(git rev-parse HEAD)
+  remote_rev=$(git rev-parse @{u} 2>/dev/null || echo "$local_rev")
+  if [ "$local_rev" = "$remote_rev" ]; then
+    echo "  already up to date ($local_rev)"
+    return 0
+  fi
+  echo "  $local_rev → $remote_rev"
+  _stop
+  git pull --ff-only
+  echo "  refreshing api deps..."
+  (cd api && ./venv/bin/pip install --quiet -e .)
+  echo "  refreshing web deps..."
+  (cd web && npm install --silent --no-fund --no-audit)
+  echo "  rebuilding web..."
+  (cd web && npm run build --silent)
+  _start
+  echo "  ✓ updated."
+}
+
+_logs() {
+  local which="${1:-api}"
+  local f="$RUN/$which.log"
+  if [ ! -f "$f" ]; then echo "no log at $f"; return 1; fi
+  tail -n 200 -f "$f"
+}
+
+case "$cmd" in
+  start)  _start ;;
+  stop)   _stop ;;
+  restart) _stop; _start ;;
+  status) _status ;;
+  update) _update ;;
+  logs)   _logs "${2:-api}" ;;
+  help|-h|--help|"")
+    cat <<HELP
+  lens start              start API + web in background
+  lens stop               stop both
+  lens restart            stop + start
+  lens status             show pid + port state
+  lens update             git pull + reinstall + restart
+  lens logs [api|web]     tail recent server log
+
+  Install dir: $LENS_DIR  (override with ODYLIC_LENS_DIR=...)
+HELP
+    ;;
+  *) echo "unknown command: $cmd. try 'lens help'"; exit 1 ;;
+esac
