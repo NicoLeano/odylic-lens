@@ -34,7 +34,12 @@ _CSP = (
     # 'wasm-unsafe-eval' is required by transformers.js (browser Whisper).
     # The library instantiates WASM modules at runtime; without it, Chrome
     # refuses the WebAssembly.instantiate() call and model load 500s.
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
+    # cdn.jsdelivr.net is required because transformers.js v3 dynamically
+    # import()'s its ONNX Runtime backend script from jsdelivr on first
+    # transcribe (ort-wasm-simd-threaded.jsep.mjs). Without that origin
+    # in script-src + connect-src the model load fails with
+    # "Failed to fetch dynamically imported module".
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
@@ -44,8 +49,11 @@ _CSP = (
     #   - localhost:* + ws:// → Vite HMR (dev) + same-origin :8765 calls
     #   - huggingface.co + *.hf.co → HuggingFace model weight downloads
     #     used by browser Whisper (Xenova/whisper-tiny.en).
+    #   - cdn.jsdelivr.net → ONNX Runtime .mjs + .wasm artefacts the
+    #     transformers.js library streams down on first transcribe.
     "connect-src 'self' https://graph.facebook.com "
     "https://huggingface.co https://*.huggingface.co https://*.hf.co "
+    "https://cdn.jsdelivr.net "
     "http://localhost:* ws://localhost:*; "
     # transformers.js spawns Web Workers from blob: URLs for WASM
     # inference. Without worker-src 'self' blob:, model load silently

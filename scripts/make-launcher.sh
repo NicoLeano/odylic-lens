@@ -65,10 +65,15 @@ case "$UNAME" in
     mkdir -p "$APP/Contents/MacOS"
     mkdir -p "$APP/Contents/Resources"
 
+    # NOTE: $PORT must be escaped as \$PORT here so the value is taken
+    # at LAUNCH time (set by START_CMD's bash) rather than substituted to
+    # empty at make-launcher.sh generation time. Without the escape the
+    # launcher would emit `open "http://localhost:"` which Brave opens
+    # as port 80 → blank page.
     cat > "$APP/Contents/MacOS/launch" <<EOF
 #!/usr/bin/env bash
 $START_CMD
-open "http://localhost:$PORT"
+open "http://localhost:\$PORT"
 EOF
     chmod +x "$APP/Contents/MacOS/launch"
 
@@ -125,7 +130,7 @@ PLIST
     cat > "$LAUNCH" <<EOF
 #!/usr/bin/env bash
 $START_CMD
-xdg-open "http://localhost:$PORT"
+xdg-open "http://localhost:\$PORT"
 EOF
     chmod +x "$LAUNCH"
 
