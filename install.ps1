@@ -130,17 +130,31 @@ try {
 # 5) .env
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    # Generate a random 32-byte hex secret
+    # Generate a random 32-byte hex secret. Use the classic
+    # RNGCryptoServiceProvider rather than RandomNumberGenerator::Fill
+    # so this works on both Windows PowerShell 5.1 (.NET Framework, the
+    # default `powershell.exe` shipped with every Windows) and modern
+    # pwsh 7+ (.NET 6+). Fill() is .NET Core 3+ only and would crash
+    # for the half of users still on stock 5.1.
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
     $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng.GetBytes($bytes)
     $secret = ($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join ''
     (Get-Content ".env") -replace '^LENS_SECRET_KEY=.*$', "LENS_SECRET_KEY=$secret" | Set-Content ".env"
     Write-OK "Generated LENS_SECRET_KEY in .env"
 }
 
 # 6) Desktop shortcut + Start Menu entry + browser favicon
+#
+# Invoke the launcher generator INLINE rather than via a separate
+# `powershell.exe -File` call. The standalone `powershell.exe` on
+# Windows is the legacy Windows PowerShell 5.1 with stricter parsing
+# rules that reject syntax modern pwsh accepts. Dot-sourcing keeps us
+# in whatever interpreter the user (or CI) launched install.ps1 with —
+# pwsh 7+ when available, 5.1 only when nothing else is around. Both
+# can parse the script we ship; we just need them to agree on which.
 Write-Step "Generating desktop launcher + Start Menu entry"
-& powershell.exe -ExecutionPolicy Bypass -NoProfile -File ".\scripts\make-launcher.ps1"
+& ".\scripts\make-launcher.ps1"
 
 # 7) Install `lens` CLI into user bin + PATH
 Write-Step "Installing 'lens' CLI"
