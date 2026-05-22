@@ -32,7 +32,18 @@ export default function Setup({ auth }: { auth: AuthStatus | null }) {
   );
 
   return (
-    <div style={{ maxWidth: 880, margin: "0 auto" }}>
+    // Wrapper provides the page-frame: side gutters on small screens,
+    // generous top padding so the header doesn't butt against the
+    // browser chrome, and a max-width that keeps reading line-length
+    // tight on big monitors. Previously this lived implicitly on #root
+    // via gradient backgrounds — when those were removed for being
+    // visually noisy, the page started reading as if it had been
+    // shoved against the top-left corner with no breathing room.
+    <div style={{
+      maxWidth: 880,
+      margin: "0 auto",
+      padding: "48px 24px 64px",
+    }}>
       <header style={{ marginBottom: 24 }}>
         <div className="label" style={{ marginBottom: 8 }}>Onboarding</div>
         <h1 style={{ marginBottom: 8 }}>Connect Meta to Odylic Lens</h1>
@@ -47,6 +58,7 @@ export default function Setup({ auth }: { auth: AuthStatus | null }) {
       <Stepper step={step} setStep={setStep} />
 
       <div style={{ marginTop: 32 }}>
+
         {step === 1 && <StepPrereqs next={() => setStep(2)} />}
         {step === 2 && <StepCreateApp next={() => setStep(3)} back={() => setStep(1)} />}
         {step === 3 && <StepVerifyPerms next={() => setStep(4)} back={() => setStep(2)} />}

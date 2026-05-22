@@ -31,12 +31,27 @@ from starlette.middleware.base import BaseHTTPMiddleware
 #   frame-ancestors 'none'. can't be iframed (clickjacking).
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
+    # 'wasm-unsafe-eval' is required by transformers.js (browser Whisper).
+    # The library instantiates WASM modules at runtime; without it, Chrome
+    # refuses the WebAssembly.instantiate() call and model load 500s.
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
     "media-src 'self' data: blob: https:; "
-    "connect-src 'self' https://graph.facebook.com http://localhost:* ws://localhost:*; "
+    # connect-src reaches:
+    #   - graph.facebook.com → Meta Graph API
+    #   - localhost:* + ws:// → Vite HMR (dev) + same-origin :8765 calls
+    #   - huggingface.co + *.hf.co → HuggingFace model weight downloads
+    #     used by browser Whisper (Xenova/whisper-tiny.en).
+    "connect-src 'self' https://graph.facebook.com "
+    "https://huggingface.co https://*.huggingface.co https://*.hf.co "
+    "http://localhost:* ws://localhost:*; "
+    # transformers.js spawns Web Workers from blob: URLs for WASM
+    # inference. Without worker-src 'self' blob:, model load silently
+    # fails with a CSP violation in the console.
+    "worker-src 'self' blob:; "
+    "child-src 'self' blob:; "
     # Facebook public-plugin iframes (post + video preview) used as a
     # fallback in AdDetailPanel when the direct Meta CDN URL expires.
     # Without this Chrome shows "This content is blocked" placeholder.

@@ -248,16 +248,92 @@ def save_profile(body: ProfileSave, lens_session: Optional[str] = Cookie(None)) 
     return {"ok": True}
 
 
+def _scrape_brand_site(domain: str, max_chars: int = 30000) -> str:
+    """Best-effort site fetch to give Claude actual ground truth.
+
+    Pulls the homepage HTML, strips scripts/styles/nav chrome, and
+    returns visible text (plus meta tags and OG tags from <head>).
+    Falls back to empty string on network/parse error — the caller will
+    still get a useful response from training knowledge alone.
+
+    Why this exists: brands like `roen.nyc` don't appear in Claude's
+    training data, so the model has nothing to anchor on and returns
+    `null` for most fields. Feeding it the actual marketing copy from
+    the homepage closes that gap.
+    """
+    if not domain:
+        return ""
+    try:
+        import urllib.request
+        import re as _re
+
+        url = f"https://{domain}" if not domain.startswith("http") else domain
+        req = urllib.request.Request(
+            url,
+            headers={
+                # Real-browser UA. some Shopify storefronts return a
+                # noscript/captcha page to default Python UAs.
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read(500_000).decode("utf-8", errors="ignore")
+
+        # Pull head metadata first. these are typically the highest-
+        # signal-density tokens (og:title, og:description, meta
+        # description, theme-color).
+        head_bits: list[str] = []
+        for m in _re.finditer(
+            r'<meta[^>]+(?:name|property)\s*=\s*["\']'
+            r'(og:[^"\']+|description|keywords|theme-color|application-name)'
+            r'["\'][^>]+content\s*=\s*["\']([^"\']+)["\']',
+            raw, _re.I,
+        ):
+            head_bits.append(f"{m.group(1)}: {m.group(2)}")
+        title_m = _re.search(r"<title[^>]*>([^<]+)</title>", raw, _re.I)
+        if title_m:
+            head_bits.insert(0, f"title: {title_m.group(1).strip()}")
+
+        # Strip scripts, styles, SVG, noscript blocks.
+        body = _re.sub(
+            r"<(script|style|noscript|svg)[^>]*>.*?</\1>",
+            " ", raw, flags=_re.I | _re.S,
+        )
+        # Strip remaining tags but keep text.
+        text = _re.sub(r"<[^>]+>", " ", body)
+        # Collapse whitespace.
+        text = _re.sub(r"\s+", " ", text).strip()
+
+        combined = "\n".join(head_bits) + "\n\n" + text
+        return combined[:max_chars]
+    except Exception:
+        return ""
+
+
 @router.post("/api/profile/generate-deep")
 def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)) -> dict:
     """Generate a rich brand profile via Claude Sonnet, merged into any
     existing saved profile (so naming convention / manual edits the
     user already made aren't clobbered).
 
-    Tolerates a profile that contains nothing but a domain. Claude
-    fills in the rest from training-knowledge. Errors during JSON
-    parsing return {"error": "..."} (not HTTP 500) so the frontend
-    can surface a clean toast rather than a blank panel.
+    Strategy:
+      1. Fetch the brand's homepage HTML if a domain is on file. this
+         lets the model anchor on actual marketing copy / OG tags /
+         visible product names rather than guessing from training data
+         (which fails on long-tail DTC brands like roen.nyc).
+      2. Hand Claude the brand name + homepage extract and demand the
+         full JSON schema. Use null only for fields the homepage
+         genuinely doesn't surface.
+      3. Merge into the existing profile (manual fields like
+         naming_convention always win).
+
+    Errors during JSON parsing return {"error": "..."} (not HTTP 500)
+    so the frontend can surface a clean toast rather than a blank panel.
     """
     import json as _json
     import re as _re
@@ -289,6 +365,10 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
             "No Anthropic API key configured. Add one in Settings → Anthropic.",
         )
 
+    # Pull the homepage so Claude has actual brand voice to read.
+    # Times out fast (8s) so the UI doesn't hang on a slow server.
+    site_excerpt = _scrape_brand_site(seed_domain) if seed_domain else ""
+
     # Build the prompt. If the user supplied a domain, pin Claude to it
     # so it doesn't wander off into a same-name brand in another market.
     domain_clause = (
@@ -297,9 +377,14 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
         if seed_domain
         else ""
     )
+    site_clause = (
+        f"\n\n--- HOMEPAGE EXTRACT ({seed_domain}) ---\n{site_excerpt}\n--- END EXTRACT ---\n"
+        if site_excerpt
+        else ""
+    )
     prompt = (
         f'You are a Senior Brand Strategist building a brand identity dossier '
-        f'for the DTC brand "{brand}".{domain_clause}\n\n'
+        f'for the DTC brand "{brand}".{domain_clause}{site_clause}\n\n'
         'Return ONLY a single JSON object with this exact shape (no prose, no code fences):\n'
         '{\n'
         '  "domain": "brand.com",\n'
@@ -325,9 +410,17 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
         '}\n\n'
         'Requirements: 3-5 hero_products, 2-4 categories, 2-3 target_personas, '
         '2-4 brand_colors, 3-6 products, 3-5 unique_value_props, 2-4 competitors. '
-        'Plain language. No em dashes. Short sentences. If a field is unknown, '
-        'use null (or [] for lists) rather than guessing. domain should be '
-        '`brand.com` format (no https://). Return ONLY valid JSON.'
+        'Plain language. No em dashes. Short sentences. domain should be '
+        '`brand.com` format (no https://). \n\n'
+        'IMPORTANT: When a homepage extract is provided above, treat it as '
+        'ground truth and EXTRACT real product names, real categories, real '
+        'value props, and the real voice/tone from that copy. Do not fall back '
+        'to null when the homepage gives evidence. only use null when neither '
+        'training knowledge nor the homepage extract surfaces the field. For '
+        'brand_colors, infer from explicit hex values or color words in the '
+        'extract; for brand_fonts, look for font-family declarations or '
+        'Google Fonts hints. Fill in every field you reasonably can. Return '
+        'ONLY valid JSON.'
     )
 
     try:
@@ -335,7 +428,7 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
         client = Anthropic(api_key=api_key, timeout=120.0)
         msg = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=4000,
+            max_tokens=6000,
             messages=[{"role": "user", "content": prompt}],
         )
         parts = [getattr(b, "text", "") for b in msg.content if getattr(b, "text", None)]

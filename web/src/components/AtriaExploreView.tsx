@@ -257,10 +257,14 @@ function fmtShortDate(iso: string | null | undefined): string {
 
 // --- Component ----------------------------------------------------------
 
-export function AtriaExploreView({ brandName }: Props) {
+export function AtriaExploreView({ brandName: _brandName }: Props) {
+  // We accept brandName for back-compat with the parent route but we no
+  // longer pre-seed the search with it. The user reported that finding
+  // their own brand pre-typed felt presumptuous; they want a clean
+  // search bar so they can drive the explore view themselves.
   const [filters, setFilters] = useState<Filters>(() => ({
     ...INITIAL_FILTERS,
-    query: brandName || '',
+    query: '',
   }))
   const [ads, setAds] = useState<AtriaAd[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
