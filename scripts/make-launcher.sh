@@ -31,8 +31,18 @@ cd "$LENS_DIR"
 mkdir -p .run
 if [ -f .run/api.pid ]; then kill "\$(cat .run/api.pid)" 2>/dev/null || true; fi
 if [ -f .run/web.pid ]; then kill "\$(cat .run/web.pid)" 2>/dev/null || true; fi
+# Apple Silicon arch guard. The bundled Python is a universal
+# binary; when the .app is launched from Finder/Dock its parent
+# process can be x86_64 (Rosetta), which causes Python to slice as
+# x86_64 too — then arm64 wheel .so files fail to load with
+# "incompatible architecture (have 'arm64', need 'x86_64')". Force
+# arm64 explicitly on M-series Macs so the venv resolves correctly.
+ARCH_PREFIX=""
+if [ "\$(uname -s)" = "Darwin" ] && [ "\$(uname -m)" = "arm64" ]; then
+  ARCH_PREFIX="arch -arm64"
+fi
 # Start API (serves the SPA bundle + /api/*)
-(cd api && nohup ./venv/bin/python main.py > "$LENS_DIR/.run/api.log" 2>&1 &
+(cd api && nohup \$ARCH_PREFIX ./venv/bin/python main.py > "$LENS_DIR/.run/api.log" 2>&1 &
   echo \$! > "$LENS_DIR/.run/api.pid")
 # Fallback: if the prebuilt bundle is missing, start Vite dev too.
 PORT=8765

@@ -40,13 +40,22 @@ cd "$INSTALL_DIR"
 # 3) Backend deps
 echo "→ Installing API dependencies"
 cd api
+# Apple Silicon arch guard. The Python.org universal2 installer ships
+# a fat binary; if pip happens to install x86_64 wheels (e.g. because
+# an x86_64 shell was invoked first) the launcher will then crash with
+# "incompatible architecture (have 'arm64', need 'x86_64')". Force
+# arm64 explicitly on M-series so every wheel lands as arm64.
+ARCH_PREFIX=""
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+  ARCH_PREFIX="arch -arm64"
+fi
 if [ ! -d venv ]; then
-  python3 -m venv venv
+  $ARCH_PREFIX python3 -m venv venv
 fi
 # shellcheck disable=SC1091
 source venv/bin/activate
-pip install --quiet --upgrade pip
-pip install --quiet -e .
+$ARCH_PREFIX pip install --quiet --upgrade pip
+$ARCH_PREFIX pip install --quiet -e .
 deactivate
 cd ..
 

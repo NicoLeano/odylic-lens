@@ -14,6 +14,16 @@ LENS_DIR="${ODYLIC_LENS_DIR:-$HOME/odylic-lens}"
 RUN="$LENS_DIR/.run"
 mkdir -p "$RUN"
 
+# Apple Silicon arch guard. The bundled Python is a universal binary
+# and may slice as x86_64 if the parent process is x86_64 (happens when
+# `lens` is invoked from a Rosetta shell or via the .app launcher
+# chain). arm64 wheels then fail with "incompatible architecture
+# (have 'arm64', need 'x86_64')". Force arm64 explicitly on M-series.
+ARCH_PREFIX=""
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+  ARCH_PREFIX="arch -arm64"
+fi
+
 cmd="${1:-help}"
 
 _alive() {
@@ -25,7 +35,7 @@ _start() {
   if _alive "$RUN/api.pid"; then
     echo "  api already running (pid $(cat "$RUN/api.pid"))"
   else
-    (cd "$LENS_DIR/api" && nohup ./venv/bin/python main.py > "$RUN/api.log" 2>&1 &
+    (cd "$LENS_DIR/api" && nohup $ARCH_PREFIX ./venv/bin/python main.py > "$RUN/api.log" 2>&1 &
       echo $! > "$RUN/api.pid")
     echo "  api → http://localhost:8765"
   fi
@@ -85,7 +95,7 @@ _update() {
   _stop
   git pull --ff-only
   echo "  refreshing api deps..."
-  (cd api && ./venv/bin/pip install --quiet -e .)
+  (cd api && $ARCH_PREFIX ./venv/bin/pip install --quiet -e .)
   echo "  refreshing web deps..."
   (cd web && npm install --silent --no-fund --no-audit)
   echo "  rebuilding web..."
