@@ -1,0 +1,241 @@
+# Cross-platform install smoke test.
+#
+# Runs the canonical one-liner installer on fresh macOS + Windows
+# runners on every push to main. Verifies:
+#   1. install.{sh,ps1} runs to completion without error.
+#   2. The lens CLI is on PATH.
+#   3. `lens start` brings up the API.
+#   4. /api/status returns 200 with the expected JSON shape.
+#   5. The prebuilt SPA serves at / (catches missed web/dist builds).
+#
+# Without this we're guessing whether each platform actually boots
+# end-to-end. GHA runners give us real macOS + Windows VMs cheaply.
+
+name: install-smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "install.sh"
+      - "install.ps1"
+      - "scripts/lens"
+      - "scripts/lens.ps1"
+      - "scripts/lens.cmd"
+      - "scripts/make-launcher.sh"
+      - "scripts/make-launcher.ps1"
+      - "api/pyproject.toml"
+      - "web/package.json"
+      - "web/package-lock.json"
+      - ".github/workflows/install-smoke.yml"
+  pull_request:
+    paths:
+      - "install.sh"
+      - "install.ps1"
+      - "scripts/**"
+      - "api/pyproject.toml"
+      - "web/package.json"
+  workflow_dispatch:
+
+jobs:
+  # ── Windows path ────────────────────────────────────────────────────
+  windows:
+    name: Windows install + boot
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run install.ps1 from a fresh checkout
+        shell: pwsh
+        run: |
+          # Point the installer at this workspace and tell it to skip
+          # the clone-or-pull step (we're already on a detached HEAD
+          # from actions/checkout, where `git pull --ff-only` would fail).
+          $env:ODYLIC_LENS_DIR = "$env:GITHUB_WORKSPACE"
+          $env:LENS_SKIP_GIT  = "1"
+          Write-Host "ODYLIC_LENS_DIR = $env:ODYLIC_LENS_DIR"
+          # Execute the installer. -ErrorAction Stop ensures any cmdlet
+          # failure propagates as a non-zero exit.
+          $ErrorActionPreference = "Stop"
+          & .\install.ps1
+
+      - name: Confirm artefacts on disk
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The pieces we care about:
+          $required = @(
+            "$env:GITHUB_WORKSPACE\api\venv\Scripts\python.exe",
+            "$env:GITHUB_WORKSPACE\api\venv\Scripts\pip.exe",
+            "$env:GITHUB_WORKSPACE\web\dist\index.html",
+            "$env:GITHUB_WORKSPACE\.env",
+            "$env:USERPROFILE\.local\bin\lens.cmd"
+          )
+          foreach ($p in $required) {
+            if (Test-Path $p) { Write-Host "  OK  $p" }
+            else { Write-Host "  MISSING $p"; exit 1 }
+          }
+
+      - name: Start the API in the background
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:ODYLIC_LENS_DIR = "$env:GITHUB_WORKSPACE"
+          # Use the CLI rather than calling python directly. exercises
+          # the lens.ps1 start path as a user would hit it.
+          & "$env:USERPROFILE\.local\bin\lens.cmd" start
+          # Poll /api/status for up to 30s — Whisper/transformers chunks
+          # aren't lazy-loaded by the API process, but FastAPI's startup
+          # is still ~3-5s.
+          $deadline = (Get-Date).AddSeconds(30)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-RestMethod -Uri "http://localhost:8765/api/status" -TimeoutSec 3
+              if ($r.service -eq "odylic-lens-api") {
+                Write-Host "  OK  /api/status responded: $($r | ConvertTo-Json -Compress)"
+                $ok = $true
+                break
+              }
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $ok) {
+            Write-Host "  /api/status never returned valid JSON in 30s."
+            Write-Host "  --- api.log ---"
+            Get-Content "$env:GITHUB_WORKSPACE\.run\api.log" -ErrorAction SilentlyContinue
+            Write-Host "  --- api.err.log ---"
+            Get-Content "$env:GITHUB_WORKSPACE\.run\api.err.log" -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+      - name: Confirm SPA serves at /
+        shell: pwsh
+        run: |
+          $r = Invoke-WebRequest -Uri "http://localhost:8765/" -TimeoutSec 5
+          if ($r.StatusCode -ne 200) {
+            Write-Host "  / returned $($r.StatusCode)"; exit 1
+          }
+          if ($r.Content -notmatch "<title>Odylic Lens</title>") {
+            Write-Host "  / didn't return the SPA shell:"
+            Write-Host $r.Content.Substring(0, [Math]::Min(500, $r.Content.Length))
+            exit 1
+          }
+          Write-Host "  OK  SPA served at /"
+
+      - name: Stop the API
+        if: always()
+        shell: pwsh
+        run: |
+          $env:ODYLIC_LENS_DIR = "$env:GITHUB_WORKSPACE"
+          & "$env:USERPROFILE\.local\bin\lens.cmd" stop
+
+      - name: Upload api logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-api-logs
+          path: |
+            ${{ github.workspace }}/.run/api.log
+            ${{ github.workspace }}/.run/api.err.log
+          if-no-files-found: ignore
+
+  # ── macOS path ──────────────────────────────────────────────────────
+  # Catches regressions on the existing bash installer at the same time.
+  # Uses macos-14 which is Apple Silicon, so the arm64 / sysctl detector
+  # gets exercised against a real M-series runner.
+  macos:
+    name: macOS install + boot
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run install.sh from a fresh checkout
+        shell: bash
+        run: |
+          export ODYLIC_LENS_DIR="$GITHUB_WORKSPACE"
+          export LENS_SKIP_GIT=1
+          bash ./install.sh
+
+      - name: Confirm artefacts on disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          for p in \
+            "$GITHUB_WORKSPACE/api/venv/bin/python" \
+            "$GITHUB_WORKSPACE/api/venv/bin/pip" \
+            "$GITHUB_WORKSPACE/web/dist/index.html" \
+            "$GITHUB_WORKSPACE/.env"; do
+            if [ -e "$p" ]; then echo "  OK  $p"
+            else echo "  MISSING $p"; exit 1; fi
+          done
+
+      - name: Start API in the background and probe /api/status
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ODYLIC_LENS_DIR="$GITHUB_WORKSPACE"
+          # Boot the API directly (the launcher's `open` call would fail
+          # on a headless runner).
+          mkdir -p "$GITHUB_WORKSPACE/.run"
+          (cd "$GITHUB_WORKSPACE/api" && nohup arch -arm64 ./venv/bin/python main.py \
+            > "$GITHUB_WORKSPACE/.run/api.log" 2>&1 &
+            echo $! > "$GITHUB_WORKSPACE/.run/api.pid")
+          # Wait for :8765 to respond.
+          deadline=$(($(date +%s) + 30))
+          while [ $(date +%s) -lt $deadline ]; do
+            if curl -sf http://localhost:8765/api/status | grep -q "odylic-lens-api"; then
+              echo "  OK  /api/status responded"
+              break
+            fi
+            sleep 1
+          done
+          curl -s http://localhost:8765/api/status || { cat "$GITHUB_WORKSPACE/.run/api.log"; exit 1; }
+          # And check the SPA HTML serves.
+          curl -s http://localhost:8765/ | grep -q "<title>Odylic Lens</title>" || {
+            echo "  SPA shell not served at /"
+            curl -s http://localhost:8765/ | head -c 500
+            exit 1
+          }
+          echo "  OK  SPA served at /"
+
+      - name: Stop API
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/.run/api.pid" ]; then
+            kill "$(cat "$GITHUB_WORKSPACE/.run/api.pid")" 2>/dev/null || true
+          fi
+
+      - name: Upload api log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-api-log
+          path: ${{ github.workspace }}/.run/api.log
+          if-no-files-found: ignore

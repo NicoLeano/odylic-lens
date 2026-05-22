@@ -27,7 +27,14 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # 2) Clone or pull
-if [ -d "$INSTALL_DIR/.git" ]; then
+#
+# LENS_SKIP_GIT=1 short-circuits the clone-or-pull step. Set by CI when
+# the workspace is already a checkout (potentially in a detached-HEAD
+# state where `git pull --ff-only` would fail) and the installer just
+# needs to set up the venv + npm build against the current tree.
+if [ "${LENS_SKIP_GIT:-0}" = "1" ]; then
+  echo "→ Skipping clone/pull (LENS_SKIP_GIT=1)"
+elif [ -d "$INSTALL_DIR/.git" ]; then
   echo "→ Updating existing checkout at $INSTALL_DIR"
   git -C "$INSTALL_DIR" pull --ff-only
 else

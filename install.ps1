@@ -76,7 +76,14 @@ if ($pyVer -match "Python (\d+)\.(\d+)") {
 }
 
 # 2) Clone or update
-if (Test-Path $InstallDir) {
+#
+# $env:LENS_SKIP_GIT = "1" short-circuits the clone-or-pull step. Set by
+# CI when the workspace is already a checkout (potentially in a detached-
+# HEAD state where `git pull --ff-only` would fail) and the installer
+# just needs to set up the venv + npm build against the current tree.
+if ($env:LENS_SKIP_GIT -eq "1") {
+    Write-Step "Skipping clone/pull (LENS_SKIP_GIT=1)"
+} elseif (Test-Path (Join-Path $InstallDir ".git")) {
     Write-Step "Updating existing checkout at $InstallDir"
     Push-Location $InstallDir
     try {
