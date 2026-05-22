@@ -23,6 +23,12 @@ dependencies = [
     # install. Without it the AI Analysis tab returns
     # "No module named 'anthropic'" the moment the user adds a key.
     "anthropic>=0.40",
+    # vaderSentiment is the lightweight fallback for comment sentiment
+    # scoring when the heavier RoBERTa/transformers extras aren't
+    # installed. ~100KB, no native deps. Without it the Comments tab
+    # ships with no sentiment labels at all because the fallback
+    # branch ImportErrors before it can score anything.
+    "vaderSentiment>=3.3",
 ]
 
 [project.optional-dependencies]
