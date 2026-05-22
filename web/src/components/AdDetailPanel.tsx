@@ -194,6 +194,10 @@ const DETAIL_GROUPS: { name: string; metrics: DetailMetric[] }[] = [
       { key: 'spend', label: 'Spend', format: 'dollar' },
       { key: 'aov', label: 'AOV', format: 'dollar' },
       { key: 'roas', label: 'ROAS', format: 'decimal' },
+      // CPA pairs naturally with ROAS in the Performance summary; the
+      // conversion-funnel CPA below is the same value, exposed here too
+      // so users don't have to scroll to the Conversions block.
+      { key: 'cpa', label: 'CPA', format: 'dollar' },
       { key: 'impressions', label: 'Impressions', format: 'number' },
       { key: 'reach', label: 'Reach', format: 'number' },
       { key: 'frequency', label: 'Frequency', format: 'decimal' },

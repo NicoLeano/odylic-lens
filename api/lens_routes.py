@@ -248,71 +248,209 @@ def save_profile(body: ProfileSave, lens_session: Optional[str] = Cookie(None)) 
     return {"ok": True}
 
 
-def _scrape_brand_site(domain: str, max_chars: int = 30000) -> str:
-    """Best-effort site fetch to give Claude actual ground truth.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
-    Pulls the homepage HTML, strips scripts/styles/nav chrome, and
-    returns visible text (plus meta tags and OG tags from <head>).
-    Falls back to empty string on network/parse error — the caller will
-    still get a useful response from training knowledge alone.
+
+def _fetch_url(url: str, timeout: float = 6.0, max_bytes: int = 500_000) -> str:
+    """Best-effort GET. Returns body text or empty string on failure.
+
+    Uses `requests` rather than urllib because the Python.org universal2
+    installer doesn't ship a CA bundle that urllib can find by default,
+    so HTTPS calls fail with CERTIFICATE_VERIFY_FAILED. requests bundles
+    certifi's CA chain and works out of the box.
+    """
+    try:
+        import requests
+        resp = requests.get(
+            url, headers=_BROWSER_HEADERS, timeout=timeout,
+            allow_redirects=True, stream=True,
+        )
+        if resp.status_code >= 400:
+            return ""
+        # Cap bytes to avoid pulling multi-MB product pages into RAM.
+        body = resp.raw.read(max_bytes, decode_content=True) or b""
+        if not isinstance(body, (bytes, bytearray)):
+            body = bytes(body)
+        return body.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _extract_visible_text(html: str, max_chars: int) -> str:
+    """Strip scripts/styles/SVG, collapse whitespace, return text only."""
+    import re as _re
+    body = _re.sub(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", " ",
+                   html, flags=_re.I | _re.S)
+    text = _re.sub(r"<[^>]+>", " ", body)
+    return _re.sub(r"\s+", " ", text).strip()[:max_chars]
+
+
+def _extract_visual_hints(html_pages: list[str]) -> dict:
+    """Mine the HTML / inline CSS for brand visual signals: hex colors,
+    font-family declarations, Google Fonts links, theme-color meta.
+    Returns a dict the prompt embeds so Claude doesn't have to guess.
+    """
+    import re as _re
+    from collections import Counter
+
+    combined = "\n".join(html_pages)
+    hex_counter: Counter[str] = Counter()
+    for m in _re.finditer(r"#([0-9a-fA-F]{6})\b", combined):
+        h = "#" + m.group(1).upper()
+        # Filter out white/black/grey-ish boilerplate noise so the top
+        # hits surface actual brand colors rather than reset.css greys.
+        if h in {"#FFFFFF", "#000000"}:
+            continue
+        hex_counter[h] += 1
+
+    # font-family: 'X', 'Y', sans-serif;  — pick the first quoted entry
+    font_counter: Counter[str] = Counter()
+    for m in _re.finditer(
+        r"font-family\s*:\s*['\"]([^'\"]+)['\"]", combined, _re.I
+    ):
+        f = m.group(1).strip()
+        # Skip generic system stacks (rarely the brand font).
+        if f.lower() in {"sans-serif", "serif", "monospace", "system-ui", "inherit", "initial"}:
+            continue
+        font_counter[f] += 1
+
+    # <link href="https://fonts.googleapis.com/css?family=Source+Serif+Pro:..."
+    gfonts: list[str] = []
+    for m in _re.finditer(
+        r'fonts\.googleapis\.com/css2?[^"\'\s>]*?family=([A-Za-z0-9+_-]+)',
+        combined,
+    ):
+        fam = m.group(1).replace("+", " ")
+        if fam not in gfonts:
+            gfonts.append(fam)
+
+    # <meta name="theme-color" content="#ABCDEF">
+    theme_colors: list[str] = []
+    for m in _re.finditer(
+        r'<meta[^>]+name=["\']theme-color["\'][^>]+content=["\']([^"\']+)["\']',
+        combined, _re.I,
+    ):
+        theme_colors.append(m.group(1))
+
+    return {
+        "top_hex_colors": [c for c, _ in hex_counter.most_common(10)],
+        "theme_colors": theme_colors,
+        "font_families_in_css": [f for f, _ in font_counter.most_common(6)],
+        "google_fonts_loaded": gfonts[:6],
+    }
+
+
+# Paths we try in addition to /. About + values pages give the brand
+# story; product / collection lists give voice + categories. Each
+# page caps at ~6s so the total worst case is bounded even if every
+# fetch hangs.
+_SITE_PATHS = [
+    "",                # homepage
+    "/about",
+    "/pages/about",
+    "/pages/about-us",
+    "/about-us",
+    "/our-story",
+    "/pages/our-story",
+    "/values",
+    "/pages/values",
+    "/collections/all",
+    "/pages/contact",
+]
+
+
+def _scrape_brand_site(domain: str, max_chars_total: int = 60000) -> tuple[str, dict]:
+    """Best-effort multi-page fetch to give Claude actual ground truth.
+
+    Returns ``(text_excerpt, visual_hints)``. The text excerpt
+    concatenates head meta + visible-text from homepage and a small
+    set of common about/values/contact pages. visual_hints contains
+    mined hex colors + font families pulled directly from inline CSS.
 
     Why this exists: brands like `roen.nyc` don't appear in Claude's
     training data, so the model has nothing to anchor on and returns
-    `null` for most fields. Feeding it the actual marketing copy from
-    the homepage closes that gap.
+    `null` for most fields. Feeding it the actual marketing copy +
+    structured visual signals lets every dossier section get filled in.
     """
     if not domain:
-        return ""
-    try:
-        import urllib.request
-        import re as _re
+        return "", {}
 
-        url = f"https://{domain}" if not domain.startswith("http") else domain
-        req = urllib.request.Request(
-            url,
-            headers={
-                # Real-browser UA. some Shopify storefronts return a
-                # noscript/captcha page to default Python UAs.
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0 Safari/537.36"
-                ),
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            raw = resp.read(500_000).decode("utf-8", errors="ignore")
+    import re as _re
+    base = f"https://{domain}" if not domain.startswith("http") else domain
+    base = base.rstrip("/")
 
-        # Pull head metadata first. these are typically the highest-
-        # signal-density tokens (og:title, og:description, meta
-        # description, theme-color).
+    # Fetch homepage first; it's required. Then opportunistically try
+    # the other paths, dropping any that 404 / redirect away.
+    pages: list[tuple[str, str]] = []
+    raw_html_pages: list[str] = []
+
+    home = _fetch_url(base)
+    if not home:
+        return "", {}
+    raw_html_pages.append(home)
+    pages.append(("homepage", home))
+
+    # Limit ourselves to ~4 additional pages so total fetch time stays
+    # under ~30s on a slow site. Stop early once we hit the budget.
+    extra_count = 0
+    for path in _SITE_PATHS[1:]:
+        if extra_count >= 4:
+            break
+        body = _fetch_url(base + path)
+        if not body or len(body) < 500:
+            continue
+        # De-dup. Some Shopify themes redirect missing pages to /.
+        if any(body == p for _, p in pages):
+            continue
+        raw_html_pages.append(body)
+        pages.append((path, body))
+        extra_count += 1
+
+    # Mine visual hints from ALL pages we fetched (inline CSS often
+    # lives in product templates not the homepage).
+    visual_hints = _extract_visual_hints(raw_html_pages)
+
+    # Build the text excerpt.
+    out_parts: list[str] = []
+    char_budget = max_chars_total
+
+    for label, html in pages:
+        if char_budget <= 0:
+            break
+        # Head metadata for this page.
         head_bits: list[str] = []
+        title_m = _re.search(r"<title[^>]*>([^<]+)</title>", html, _re.I)
+        if title_m:
+            head_bits.append(f"title: {title_m.group(1).strip()}")
         for m in _re.finditer(
             r'<meta[^>]+(?:name|property)\s*=\s*["\']'
             r'(og:[^"\']+|description|keywords|theme-color|application-name)'
             r'["\'][^>]+content\s*=\s*["\']([^"\']+)["\']',
-            raw, _re.I,
+            html, _re.I,
         ):
             head_bits.append(f"{m.group(1)}: {m.group(2)}")
-        title_m = _re.search(r"<title[^>]*>([^<]+)</title>", raw, _re.I)
-        if title_m:
-            head_bits.insert(0, f"title: {title_m.group(1).strip()}")
 
-        # Strip scripts, styles, SVG, noscript blocks.
-        body = _re.sub(
-            r"<(script|style|noscript|svg)[^>]*>.*?</\1>",
-            " ", raw, flags=_re.I | _re.S,
-        )
-        # Strip remaining tags but keep text.
-        text = _re.sub(r"<[^>]+>", " ", body)
-        # Collapse whitespace.
-        text = _re.sub(r"\s+", " ", text).strip()
+        head_text = "\n".join(head_bits)
+        # Visible text gets the bulk of the budget on the homepage,
+        # less on follow-up pages so we don't fill the prompt with
+        # product-listing chaff.
+        page_budget = min(char_budget - len(head_text), 20000 if label == "homepage" else 8000)
+        if page_budget < 200:
+            break
+        body_text = _extract_visible_text(html, page_budget)
+        block = f"--- {label} ({domain}) ---\n{head_text}\n\n{body_text}\n"
+        out_parts.append(block)
+        char_budget -= len(block)
 
-        combined = "\n".join(head_bits) + "\n\n" + text
-        return combined[:max_chars]
-    except Exception:
-        return ""
+    return "\n".join(out_parts), visual_hints
 
 
 @router.post("/api/profile/generate-deep")
@@ -365,9 +503,10 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
             "No Anthropic API key configured. Add one in Settings → Anthropic.",
         )
 
-    # Pull the homepage so Claude has actual brand voice to read.
-    # Times out fast (8s) so the UI doesn't hang on a slow server.
-    site_excerpt = _scrape_brand_site(seed_domain) if seed_domain else ""
+    # Pull the homepage + about/values pages so Claude has actual brand
+    # voice to read. Times out fast on each page so the UI doesn't hang
+    # on a slow server.
+    site_excerpt, visual_hints = _scrape_brand_site(seed_domain) if seed_domain else ("", {})
 
     # Build the prompt. If the user supplied a domain, pin Claude to it
     # so it doesn't wander off into a same-name brand in another market.
@@ -378,57 +517,135 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
         else ""
     )
     site_clause = (
-        f"\n\n--- HOMEPAGE EXTRACT ({seed_domain}) ---\n{site_excerpt}\n--- END EXTRACT ---\n"
+        f"\n\n--- SITE EXTRACT ({seed_domain}) ---\n{site_excerpt}\n--- END EXTRACT ---\n"
         if site_excerpt
         else ""
     )
+    visual_clause = ""
+    if visual_hints and any(visual_hints.values()):
+        visual_clause = (
+            "\n--- VISUAL SIGNALS MINED FROM THE SITE'S INLINE CSS ---\n"
+            f"Most-used hex colors: {visual_hints.get('top_hex_colors') or []}\n"
+            f"<meta theme-color>: {visual_hints.get('theme_colors') or []}\n"
+            f"font-family declarations: {visual_hints.get('font_families_in_css') or []}\n"
+            f"Google Fonts loaded: {visual_hints.get('google_fonts_loaded') or []}\n"
+            "Use these as ground truth for brand_colors / color_primary / color_secondary "
+            "and brand_fonts / typography_display / typography_body. Don't invent random hex codes.\n"
+            "--- END VISUAL SIGNALS ---\n"
+        )
     prompt = (
-        f'You are a Senior Brand Strategist building a brand identity dossier '
-        f'for the DTC brand "{brand}".{domain_clause}{site_clause}\n\n'
-        'Return ONLY a single JSON object with this exact shape (no prose, no code fences):\n'
+        f'You are a Senior Brand Strategist building a COMPREHENSIVE brand identity '
+        f'dossier for the DTC brand "{brand}".{domain_clause}{site_clause}{visual_clause}\n\n'
+        'Return ONLY a single JSON object with this exact shape (no prose, no code fences). '
+        'Every field listed must be populated. Use `null` ONLY when the site extract, '
+        'visual signals, AND your training knowledge all genuinely lack the information.\n\n'
         '{\n'
+        '  /* ── Identity ── */\n'
         '  "domain": "brand.com",\n'
         '  "description": "2-3 sentence brand/product description, plain language",\n'
-        '  "hero_products": ["product 1", "product 2", "product 3"],\n'
-        '  "categories": ["specific category 1", "specific category 2"],\n'
+        '  "tagline": "Short marketing tagline if one is visible on the site",\n'
+        '  "founded_year": "YYYY or null",\n'
+        '  "hq_location": "City, State/Country or null",\n'
+        '  "mission_statement": "1-2 sentences — what the brand exists to do",\n'
+        '  "logo_url": "https://full-url-to-brand-logo.png or null if unknown",\n'
+        '  "favicon": null,\n'
+        '\n'
+        '  /* ── Positioning ── */\n'
+        '  "category": "Specific market category (e.g. \\"premium leather handbags\\")",\n'
+        '  "competitive_frame": "Adjacent set the brand competes against (e.g. \\"Polène, Cuyana, Mansur Gavriel\\")",\n'
+        '  "differentiator": "1 sentence — what makes this brand specifically different",\n'
+        '  "positioning_statement": "For [audience], [brand] is the [category] that [differentiator].",\n'
+        '  "proof_points": ["concrete proof 1", "concrete proof 2", "concrete proof 3"],\n'
+        '\n'
+        '  /* ── Brand Pyramid ── */\n'
+        '  "brand_essence": "2-3 word essence (e.g. \\"Quiet confidence\\")",\n'
+        '  "brand_values": ["value 1", "value 2", "value 3", "value 4"],\n'
+        '  "personality_traits": ["adjective 1", "adjective 2", "adjective 3", "adjective 4"],\n'
+        '  "functional_benefits": ["benefit 1", "benefit 2", "benefit 3"],\n'
+        '  "emotional_benefits": ["benefit 1", "benefit 2", "benefit 3"],\n'
+        '\n'
+        '  /* ── Audience ── */\n'
+        '  "primary_persona": "Name + 2 sentence sketch of the single sharpest customer.",\n'
         '  "target_personas": [\n'
+        '    {"name": "First name", "description": "1-2 sentences covering age, lifestyle, motivation"}\n'
+        '  ],\n'
+        '  "secondary_personas": [\n'
         '    {"name": "First name", "description": "1-2 sentences"}\n'
         '  ],\n'
-        '  "logo_url": "https://full-url-to-brand-logo.png or null if unknown",\n'
+        '  "jobs_to_be_done": ["functional + emotional + social JTBD 1", "JTBD 2", "JTBD 3"],\n'
+        '  "objections": ["likely objection 1", "objection 2", "objection 3"],\n'
+        '\n'
+        '  /* ── Voice & Tone ── */\n'
+        '  "voice_tone": "Short paragraph describing the brand voice (formal/casual, warm/clinical, etc).",\n'
+        '  "voice_attributes": ["adjective 1", "adjective 2", "adjective 3", "adjective 4"],\n'
+        '  "do_say": ["phrase or word the brand uses", "another", "another", "another"],\n'
+        '  "dont_say": ["phrase the brand never uses", "another", "another"],\n'
+        '  "example_snippets": ["one real headline pulled from the site", "another", "another"],\n'
+        '\n'
+        '  /* ── Visual ── */\n'
         '  "brand_colors": [\n'
-        '    {"hex": "#1A1A1A", "name": "Near Black", "usage": "primary"}\n'
+        '    {"hex": "#1A1A1A", "name": "Near Black", "usage": "primary"},\n'
+        '    {"hex": "#F2F0ED", "name": "Cream", "usage": "background"}\n'
         '  ],\n'
-        '  "brand_fonts": {"primary": "Font family", "secondary": "Font family"},\n'
+        '  "color_primary": "#1A1A1A",\n'
+        '  "color_secondary": "#F2F0ED",\n'
+        '  "brand_fonts": {"primary": "Display font family", "secondary": "Body font family"},\n'
+        '  "typography_display": "Display font family",\n'
+        '  "typography_body": "Body font family",\n'
+        '  "logo_dos": ["do 1", "do 2"],\n'
+        '  "logo_donts": ["dont 1", "dont 2"],\n'
+        '\n'
+        '  /* ── Products ── */\n'
+        '  "hero_products": ["top seller 1", "top seller 2", "top seller 3"],\n'
+        '  "categories": ["category 1", "category 2", "category 3"],\n'
         '  "products": [\n'
         '    {"name": "Product name", "description": "One-sentence summary", '
         '"hero_image": null, "price_range": "$29-$49", "sku": null}\n'
         '  ],\n'
-        '  "voice_tone": "Short paragraph",\n'
-        '  "competitors": ["c1", "c2", "c3"],\n'
-        '  "unique_value_props": ["uvp 1", "uvp 2", "uvp 3"],\n'
-        '  "social_links": {"instagram": null, "tiktok": null, "website": null}\n'
+        '  "price_range": "$X - $Y across the catalog",\n'
+        '  "merchandising_notes": "Anything notable about how the catalog is organized (drops, seasons, collabs)",\n'
+        '\n'
+        '  /* ── Social ── */\n'
+        '  "social_links": {"instagram": "https://… or null", "tiktok": "https://… or null", "website": "https://brand.com"},\n'
+        '\n'
+        '  /* ── Performance benchmarks (best-guess targets, not actuals) ── */\n'
+        '  "cac_target": "Estimated healthy CAC for this category, e.g. \\"$45-$70\\"",\n'
+        '  "ltv_target": "Estimated 12-month LTV, e.g. \\"$180-$240\\"",\n'
+        '  "margin_target": "Typical gross margin band, e.g. \\"55-65%\\"",\n'
+        '  "top_channels": ["Meta", "Google", "TikTok", "Email"],\n'
+        '\n'
+        '  /* ── Compliance ── */\n'
+        '  "claims_allowed": ["claim the brand can safely make", "another", "another"],\n'
+        '  "claims_avoided": ["claim the brand should avoid making", "another"],\n'
+        '  "trademarks": ["™ or ® mark visible on site", "another"],\n'
+        '\n'
+        '  /* ── Strategic context ── */\n'
+        '  "competitors": ["direct competitor 1", "direct competitor 2", "direct competitor 3"],\n'
+        '  "unique_value_props": ["uvp 1", "uvp 2", "uvp 3"]\n'
         '}\n\n'
         'Requirements: 3-5 hero_products, 2-4 categories, 2-3 target_personas, '
-        '2-4 brand_colors, 3-6 products, 3-5 unique_value_props, 2-4 competitors. '
+        '2-4 brand_colors, 3-6 products, 3-5 unique_value_props, 2-4 competitors, '
+        '3-5 brand_values, 3-4 personality_traits, 3-5 do_say items, 2-4 dont_say items, '
+        '3 example_snippets pulled VERBATIM from the site extract when possible. '
         'Plain language. No em dashes. Short sentences. domain should be '
         '`brand.com` format (no https://). \n\n'
-        'IMPORTANT: When a homepage extract is provided above, treat it as '
+        'IMPORTANT: When a site extract is provided above, treat it as '
         'ground truth and EXTRACT real product names, real categories, real '
-        'value props, and the real voice/tone from that copy. Do not fall back '
-        'to null when the homepage gives evidence. only use null when neither '
-        'training knowledge nor the homepage extract surfaces the field. For '
-        'brand_colors, infer from explicit hex values or color words in the '
-        'extract; for brand_fonts, look for font-family declarations or '
-        'Google Fonts hints. Fill in every field you reasonably can. Return '
-        'ONLY valid JSON.'
+        'value props, real headlines, and the real voice/tone from that copy. '
+        'Do not fall back to null when the site gives evidence — even partial '
+        'evidence is better than null. When visual signals are provided, use the '
+        'top hex colors and font families directly (do not invent alternative '
+        'colors). For cac/ltv/margin targets it is OK to give a benchmark '
+        'estimate for the category if the site itself doesn\'t state numbers — '
+        'mark these as targets, not actuals. Return ONLY valid JSON.'
     )
 
     try:
         from anthropic import Anthropic
-        client = Anthropic(api_key=api_key, timeout=120.0)
+        client = Anthropic(api_key=api_key, timeout=180.0)
         msg = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=6000,
+            max_tokens=12000,
             messages=[{"role": "user", "content": prompt}],
         )
         parts = [getattr(b, "text", "") for b in msg.content if getattr(b, "text", None)]
@@ -442,6 +659,12 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
     cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
     m = _re.search(r"\{[\s\S]*\}", cleaned)
     json_body = m.group(0) if m else cleaned
+    # The prompt embeds /* … */ section dividers as a structural hint to
+    # the model. Claude sometimes preserves them in the output, which
+    # json.loads rejects. Strip block comments + trailing-comma noise
+    # before parsing so we don't lose an otherwise-valid response.
+    json_body = _re.sub(r"/\*[\s\S]*?\*/", "", json_body)
+    json_body = _re.sub(r",\s*([}\]])", r"\1", json_body)
     try:
         deep = _json.loads(json_body)
     except _json.JSONDecodeError as e:
@@ -454,18 +677,45 @@ def generate_deep_profile(brand: str, lens_session: Optional[str] = Cookie(None)
         deep["domain"] = domain
         deep["favicon"] = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
 
-    # Merge: user's existing manual fields win. We do NOT overwrite
-    # naming_convention, ad_name_convention, taxonomy, or any field the
-    # user typed by hand. only fill in blanks.
+    # Merge: user's existing manual fields win for things the user
+    # typed by hand (naming_convention, ad_name_convention, taxonomy,
+    # uploaded_docs, etc). The AI-generated dossier fields below ALWAYS
+    # overwrite when the model returned non-null evidence, because the
+    # user explicitly asked to regenerate them.
     merged: dict = {**deep, **existing}
-    # …except for the AI-generated dossier fields the user explicitly
-    # asked to regenerate. Those overwrite the existing values.
-    for k in (
-        "description", "hero_products", "categories", "target_personas",
-        "logo_url", "brand_colors", "brand_fonts", "products",
-        "voice_tone", "competitors", "unique_value_props", "social_links",
-        "favicon",
-    ):
+    AI_FIELDS = (
+        # Identity
+        "description", "tagline", "founded_year", "hq_location",
+        "mission_statement", "logo_url", "favicon",
+        # Positioning
+        "category", "competitive_frame", "differentiator",
+        "positioning_statement", "proof_points",
+        # Pyramid
+        "brand_essence", "brand_values", "personality_traits",
+        "functional_benefits", "emotional_benefits",
+        # Audience
+        "primary_persona", "target_personas", "secondary_personas",
+        "jobs_to_be_done", "objections",
+        # Voice
+        "voice_tone", "voice_attributes", "do_say", "dont_say",
+        "example_snippets",
+        # Visual
+        "brand_colors", "color_primary", "color_secondary",
+        "brand_fonts", "typography_display", "typography_body",
+        "logo_dos", "logo_donts",
+        # Products
+        "hero_products", "categories", "products", "price_range",
+        "merchandising_notes",
+        # Social
+        "social_links",
+        # Performance benchmarks
+        "cac_target", "ltv_target", "margin_target", "top_channels",
+        # Compliance
+        "claims_allowed", "claims_avoided", "trademarks",
+        # Strategic context
+        "competitors", "unique_value_props",
+    )
+    for k in AI_FIELDS:
         if k in deep and deep[k] is not None:
             merged[k] = deep[k]
 
