@@ -21,20 +21,34 @@ because you use *your own* Meta App credentials.
 
 ## One-line install
 
+**macOS / Linux** (bash, zsh — any terminal):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/peterquads/odylic-lens/main/install.sh | bash
 ```
 
+**Windows** (PowerShell — Win+X → "Windows PowerShell"):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/peterquads/odylic-lens/main/install.ps1 | iex
+```
+
 This installer:
 
-1. Clones the repo into `~/odylic-lens` (override with `ODYLIC_LENS_DIR=`).
+1. Clones the repo into `~/odylic-lens` (or `%USERPROFILE%\odylic-lens` on
+   Windows; override either with `ODYLIC_LENS_DIR=`).
 2. Creates a Python venv, installs API deps, **pre-builds the web bundle**.
 3. Generates a random `LENS_SECRET_KEY` in `.env`.
-4. Symlinks the `lens` CLI onto your PATH (`/usr/local/bin/lens` or
-   `~/.local/bin/lens`).
+4. Installs the `lens` CLI onto your PATH — symlink at `/usr/local/bin/lens`
+   or `~/.local/bin/lens` on macOS/Linux; `.cmd` shim at
+   `%USERPROFILE%\.local\bin\lens.cmd` on Windows (folder is added to your
+   user PATH so PowerShell finds it).
 5. Drops a desktop launcher (`~/Applications/Odylic Lens.app` on macOS,
-   `.desktop` entry on Linux) so you can double-click to launch and
-   start it from Spotlight.
+   `.desktop` entry on Linux, Desktop + Start Menu `.lnk` shortcut on
+   Windows) so you can double-click to launch.
+
+On Windows the installer also auto-installs Git, Python 3.12, and Node.js
+LTS via `winget` if they're missing.
 
 After install: edit `~/odylic-lens/.env` to paste your Meta App ID +
 Secret (one-time, see [docs/setup.md](docs/setup.md)), then launch the
