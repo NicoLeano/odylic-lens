@@ -19,8 +19,10 @@ mkdir -p "$RUN"
 # `lens` is invoked from a Rosetta shell or via the .app launcher
 # chain). arm64 wheels then fail with "incompatible architecture
 # (have 'arm64', need 'x86_64')". Force arm64 explicitly on M-series.
+# Use sysctl, NOT `uname -m`: under Rosetta uname reports the
+# EMULATED arch ("x86_64") and the guard would silently no-op.
 ARCH_PREFIX=""
-if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+if [ "$(uname -s)" = "Darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
   ARCH_PREFIX="arch -arm64"
 fi
 

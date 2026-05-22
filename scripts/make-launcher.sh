@@ -37,8 +37,11 @@ if [ -f .run/web.pid ]; then kill "\$(cat .run/web.pid)" 2>/dev/null || true; fi
 # x86_64 too — then arm64 wheel .so files fail to load with
 # "incompatible architecture (have 'arm64', need 'x86_64')". Force
 # arm64 explicitly on M-series Macs so the venv resolves correctly.
+# We detect with sysctl rather than uname -m because under Rosetta
+# uname -m reports the EMULATED arch ("x86_64") and the guard would
+# silently no-op — which is exactly the failure mode we just shipped.
 ARCH_PREFIX=""
-if [ "\$(uname -s)" = "Darwin" ] && [ "\$(uname -m)" = "arm64" ]; then
+if [ "\$(uname -s)" = "Darwin" ] && [ "\$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
   ARCH_PREFIX="arch -arm64"
 fi
 # Start API (serves the SPA bundle + /api/*)

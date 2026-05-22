@@ -45,8 +45,11 @@ cd api
 # an x86_64 shell was invoked first) the launcher will then crash with
 # "incompatible architecture (have 'arm64', need 'x86_64')". Force
 # arm64 explicitly on M-series so every wheel lands as arm64.
+# Detect via sysctl (NOT uname -m): under Rosetta `uname -m` reports
+# the EMULATED arch ("x86_64") and silently lies about the hardware;
+# sysctl hw.optional.arm64 reports the real CPU regardless of mode.
 ARCH_PREFIX=""
-if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+if [ "$(uname -s)" = "Darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
   ARCH_PREFIX="arch -arm64"
 fi
 if [ ! -d venv ]; then
