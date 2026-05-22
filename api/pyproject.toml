@@ -17,11 +17,16 @@ dependencies = [
     "cryptography>=43",
     "itsdangerous>=2.2",
     "Pillow>=10.0",
+    # The Anthropic client is used by ad-tagging, comment analysis,
+    # script analysis, and Deep Profile generation. These are core
+    # features (not optional extras), so anthropic ships with every
+    # install. Without it the AI Analysis tab returns
+    # "No module named 'anthropic'" the moment the user adds a key.
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-ai = ["anthropic>=0.40"]
 sentiment = ["transformers>=4.40", "torch>=2.2"]
 # Local audio transcription. Install with:
 #   pip install -e '.[transcribe]'
