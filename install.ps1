@@ -104,9 +104,13 @@ try {
     if (-not (Test-Path "venv")) {
         python -m venv venv
     }
-    $pip = ".\venv\Scripts\pip.exe"
-    & $pip install --quiet --upgrade pip
-    & $pip install --quiet -e .
+    # Use `python -m pip` for the upgrade step. Calling pip.exe directly
+    # to upgrade itself fails on Windows with "To modify pip, please run
+    # the following command: ... python.exe -m pip install --upgrade pip"
+    # because the running .exe holds an open handle to its own file.
+    $venvPython = ".\venv\Scripts\python.exe"
+    & $venvPython -m pip install --quiet --upgrade pip
+    & $venvPython -m pip install --quiet -e .
 } finally { Pop-Location }
 
 # 4) Frontend deps + production build

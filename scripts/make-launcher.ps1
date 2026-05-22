@@ -73,25 +73,42 @@ Set-Content -Path $LaunchCmd -Value $launchBody -Encoding ASCII
 #
 # The repo ships web\public\odylic-icon.png (512px). Windows .lnk targets
 # want a multi-resolution .ico. Use Python+Pillow (already installed in
-# the API venv) to render one. Skip silently if Pillow isn't there yet
-# (first-install ordering safety net).
-$IconPng = Join-Path $LensDir "web\public\odylic-icon.png"
-$IconIco = Join-Path $LensDir "scripts\build\AppIcon.ico"
-$Python = Join-Path $LensDir "api\venv\Scripts\python.exe"
-if ((Test-Path $IconPng) -and (Test-Path $Python) -and (-not (Test-Path $IconIco))) {
+# the API venv) to render one. Skip silently if anything's missing.
+$IconPng    = Join-Path $LensDir "web\public\odylic-icon.png"
+$IconIco    = Join-Path $LensDir "scripts\build\AppIcon.ico"
+$VenvPython = Join-Path $LensDir "api\venv\Scripts\python.exe"
+
+$canBuildIcon = (Test-Path $IconPng) -and (Test-Path $VenvPython) -and (-not (Test-Path $IconIco))
+if ($canBuildIcon) {
     $iconBuildDir = Split-Path $IconIco -Parent
-    if (-not (Test-Path $iconBuildDir)) { New-Item -ItemType Directory -Path $iconBuildDir -Force | Out-Null }
-    $pyScript = @"
+    if (-not (Test-Path $iconBuildDir)) {
+        New-Item -ItemType Directory -Path $iconBuildDir -Force | Out-Null
+    }
+
+    # Single-quoted here-string so PowerShell doesn't try to interpolate
+    # `$IconPng` / `$IconIco` (which contain backslashes that bite when
+    # eval'd as Python). Use sys.argv[1..2] for the paths instead.
+    $pyScript = @'
+import sys
 from PIL import Image
-img = Image.open(r'$IconPng').convert('RGBA')
-img.save(r'$IconIco', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
-"@
+src, dst = sys.argv[1], sys.argv[2]
+img = Image.open(src).convert("RGBA")
+img.save(dst, format="ICO", sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+'@
+
     $tempPy = Join-Path $env:TEMP "_lens_make_ico.py"
     Set-Content -Path $tempPy -Value $pyScript -Encoding UTF8
+
     try {
-        & $Python $tempPy 2>$null
-        Write-Host "  ✓ icon: $IconIco"
-    } catch { } finally {
+        & $VenvPython $tempPy $IconPng $IconIco 2>$null
+        if (Test-Path $IconIco) {
+            Write-Host "  ✓ icon: $IconIco"
+        }
+    }
+    catch {
+        # Best-effort. Falls through to the generic shortcut icon.
+    }
+    finally {
         Remove-Item $tempPy -ErrorAction SilentlyContinue
     }
 }
