@@ -143,6 +143,15 @@ export function BrandSelector({
               zIndex: 10001,
               display: 'flex',
               flexDirection: 'column',
+              // Override .atelier-section's translucent glass gradient
+              // with an opaque white. Frosted-glass blur breaks down on
+              // some stacking contexts (Brand popover lives at z=10001
+              // above the rest of the app), making content underneath
+              // read through. Opaque keeps the brand list legible at
+              // every render path.
+              background: 'rgba(255, 255, 255, 0.98)',
+              backdropFilter: 'blur(40px) saturate(180%)',
+              WebkitBackdropFilter: 'blur(40px) saturate(180%)',
             }}
             onClick={e => e.stopPropagation()}
           >

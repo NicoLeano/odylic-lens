@@ -35,7 +35,12 @@ _CSP = (
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
     "connect-src 'self' https://graph.facebook.com http://localhost:* ws://localhost:*; "
+    # Facebook public-plugin iframes (post + video preview) used as a
+    # fallback in AdDetailPanel when the direct Meta CDN URL expires.
+    # Without this Chrome shows "This content is blocked" placeholder.
+    "frame-src https://www.facebook.com https://web.facebook.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self' https://www.facebook.com"

@@ -26,10 +26,11 @@ body {
 
 #root {
   min-height: 100vh;
-  background:
-    radial-gradient(ellipse at 20% 50%, rgba(200, 180, 160, 0.15) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, rgba(160, 180, 210, 0.12) 0%, transparent 50%),
-    radial-gradient(ellipse at 60% 80%, rgba(180, 200, 170, 0.10) 0%, transparent 50%);
+  /* Background washes were three soft pastel radial gradients carrying
+     warm + cool + green tints across the viewport. Pulled them in
+     v0.3 — they read as a "white wash blob" in the top-left area
+     instead of a unified canvas tone. Flat surface color now,
+     inherited from body's --color-surface. */
 }
 
 .font-display {
@@ -345,15 +346,13 @@ html[data-privacy-mode="on"] body::before {
   color: var(--color-text-primary);
 }
 
-.glass::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.25), transparent 60%);
-  z-index: -1;
-  pointer-events: none;
-}
+/* `.glass::after` used to paint a soft white radial ellipse on every
+   glass element. On small pills it looked like a specular highlight,
+   but on the full-width Shell header (and any large `.glass` panel
+   spanning the viewport) it bled into a big arc-shaped wash visible
+   across the page. Removed in v0.3. The inset-highlight on
+   `.atelier-tile` / `.atelier-section` covers the specular feel
+   where it actually belongs. */
 
 .glass-hover:hover {
   background: rgba(255, 255, 255, 0.55);

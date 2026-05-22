@@ -68,6 +68,7 @@ EOF
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>com.odylic.lens</string>
   <key>CFBundleName</key><string>Odylic Lens</string>
   <key>CFBundleDisplayName</key><string>Odylic Lens</string>
@@ -80,10 +81,26 @@ EOF
 </plist>
 PLIST
 
-    # Drop in a tinted icon if one ships with the repo (web/public/odylic-logo.png)
-    if [ -f "$LENS_DIR/web/public/odylic-logo.png" ]; then
-      cp "$LENS_DIR/web/public/odylic-logo.png" "$APP/Contents/Resources/AppIcon.png" 2>/dev/null || true
+    # Generate the glassy serif "O" icon if we have Pillow and don't already
+    # have a fresh .icns in scripts/build. Falls back silently if Pillow
+    # isn't available on this machine.
+    ICNS="$LENS_DIR/scripts/build/AppIcon.icns"
+    if [ ! -f "$ICNS" ] && [ -x "$LENS_DIR/api/venv/bin/python" ]; then
+      "$LENS_DIR/api/venv/bin/python" "$LENS_DIR/scripts/make-icon.py" >/dev/null 2>&1 || true
     fi
+    if [ -f "$ICNS" ]; then
+      cp "$ICNS" "$APP/Contents/Resources/AppIcon.icns"
+    elif [ -f "$LENS_DIR/web/public/odylic-icon.png" ]; then
+      # Fallback: ship the 512px PNG as AppIcon.png (Finder will render it
+      # but at lower quality than a multi-resolution .icns).
+      cp "$LENS_DIR/web/public/odylic-icon.png" "$APP/Contents/Resources/AppIcon.png" 2>/dev/null || true
+    fi
+
+    # Force Finder/LaunchServices to re-cache the icon. Without this, the
+    # bundle keeps showing the previous (or generic) icon until logout.
+    touch "$APP" 2>/dev/null || true
+    /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
+      -f "$APP" >/dev/null 2>&1 || true
 
     echo "  ✓ macOS launcher: $APP"
     echo "    Open from Applications, Spotlight, or 'open -a \"Odylic Lens\"'"
@@ -102,13 +119,21 @@ xdg-open "http://localhost:$PORT"
 EOF
     chmod +x "$LAUNCH"
 
+    # Generate the 512px icon if missing and Pillow is available.
+    ICON="$LENS_DIR/web/public/odylic-icon.png"
+    if [ ! -f "$ICON" ] && [ -x "$LENS_DIR/api/venv/bin/python" ]; then
+      "$LENS_DIR/api/venv/bin/python" "$LENS_DIR/scripts/make-icon.py" >/dev/null 2>&1 || true
+    fi
+    # Fall back to odylic-logo.png if make-icon.py didn't run.
+    [ -f "$ICON" ] || ICON="$LENS_DIR/web/public/odylic-logo.png"
+
     cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Odylic Lens
 Comment=Self-hosted Meta ad creative analysis
 Exec=$LAUNCH
-Icon=$LENS_DIR/web/public/odylic-logo.png
+Icon=$ICON
 Terminal=false
 Categories=Development;Office;
 StartupNotify=true

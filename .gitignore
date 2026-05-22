@@ -31,6 +31,12 @@ api/lens.db
 api/lens.db-journal
 api/.run/
 
+# Runtime artifacts written into the repo root when `lens` is invoked
+# from inside the checkout (start.sh is a duplicate of `lens start` and
+# .run/ at root mirrors api/.run/).
+/.run/
+/start.sh
+
 # Test downloads + scratch
 /tmp/dl-smoke/
 

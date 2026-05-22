@@ -29,12 +29,20 @@ _start() {
       echo $! > "$RUN/api.pid")
     echo "  api → http://localhost:8765"
   fi
+  # Production path: web/dist is prebuilt by install.sh and the API
+  # serves the SPA from :8765. No need to start Vite. The fallback
+  # below kicks in only when someone deleted web/dist (or is doing
+  # dev work and wants HMR).
+  if [ -f "$LENS_DIR/web/dist/index.html" ]; then
+    echo "  ui  → http://localhost:8765  (served by API from prebuilt bundle)"
+    return
+  fi
   if _alive "$RUN/web.pid"; then
     echo "  web already running (pid $(cat "$RUN/web.pid"))"
   else
     (cd "$LENS_DIR/web" && nohup npm run dev > "$RUN/web.log" 2>&1 &
       echo $! > "$RUN/web.pid")
-    echo "  web → http://localhost:5173"
+    echo "  web → http://localhost:5173  (dev fallback. web/dist missing — re-run 'lens update' to rebuild)"
   fi
 }
 
