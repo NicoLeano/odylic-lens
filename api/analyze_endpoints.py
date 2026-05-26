@@ -176,6 +176,8 @@ def _build_prompt(
             "",
             f"Recommend {n_recipes} new ad concepts that build on the patterns",
             "in the winners but explore fresh angles. Match the brand voice.",
+            'For "fal_model_hint", return one short token only: "default" or "kling".',
+            "Do not include model explanations, alternatives, or prose in that field.",
             "",
             "Return JSON with shape:",
             (
@@ -183,7 +185,7 @@ def _build_prompt(
                 '"persona": "...", "funnel_position": "top|mid|bottom", '
                 '"hook": "...", "copy_outline": "...", "visual_direction": "...", '
                 '"product": "...", "format": "image|video|carousel", '
-                '"fal_model_hint": "flux/dev or similar", '
+                '"fal_model_hint": "default|kling", '
                 '"rationale": "why this concept", '
                 '"source_winner_ids": ["..."] } ] }'
             ),

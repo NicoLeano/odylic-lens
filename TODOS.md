@@ -4,7 +4,13 @@
 
 ---
 
-## TODO-009: Defensive fal.ai model resolver — drop the prefix-match footgun
+## ~~TODO-009: Defensive fal.ai model resolver — drop the prefix-match footgun~~ RESOLVED 2026-05-26
+
+Resolved with a whitelist-based Create resolver: it extracts the first token, accepts only known
+`default` / `kling` aliases or the exact default fal.ai model ID, and falls back to
+`DEFAULT_VIDEO_MODEL` for prose hints like `"veo-3 o kling-pro para movimiento natural"`.
+Analyze prompts now constrain `fal_model_hint` to one short token. Regression coverage: direct
+resolver, generate-video route, and prompt-contract tests.
 
 **What:** Tighten `_video_model_for(recipe, override)` in `api/create_endpoints.py:129-138`. Current branch
 `if lowered.startswith(("kling", "veo", "hunyuan")): return f"fal-ai/{hint}"` matches Claude's free-form
