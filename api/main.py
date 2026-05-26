@@ -48,6 +48,7 @@ from ads_reports_endpoints import router as ads_reports_router
 from boards_endpoints import router as boards_router
 from atria_endpoints import router as atria_router
 from analyze_endpoints import router as analyze_router
+from create_endpoints import router as create_router
 
 app = FastAPI(
     title="Odylic Lens API",
@@ -100,6 +101,7 @@ app.include_router(ads_reports_router)
 app.include_router(boards_router)
 app.include_router(atria_router)
 app.include_router(analyze_router)
+app.include_router(create_router)
 app.include_router(lens_router)
 app.include_router(transcribe_router)
 

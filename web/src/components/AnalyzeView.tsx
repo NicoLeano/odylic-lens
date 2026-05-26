@@ -5,23 +5,10 @@
 // clipboard helper (decision 6A).
 
 import { useState } from 'react'
-import { Loader2, RefreshCcw, Sparkles, ShieldAlert, Copy, Check } from 'lucide-react'
+import { ArrowRight, Loader2, RefreshCcw, Sparkles, ShieldAlert, Copy, Check } from 'lucide-react'
 import { api, ApiError } from '../lib/api'
-
-export type Recipe = {
-  recipe_id: string
-  angle: string
-  persona: string
-  funnel_position: 'top' | 'mid' | 'bottom' | string
-  hook: string
-  copy_outline: string
-  visual_direction: string
-  product: string
-  format: 'image' | 'video' | 'carousel' | string
-  fal_model_hint: string
-  rationale: string
-  source_winner_ids: string[]
-}
+import { RecipeCard } from './RecipeCard'
+import type { Recipe } from '../types/creative'
 
 type AnalyzeResponse = { recipes: Recipe[] }
 
@@ -34,7 +21,13 @@ type RequestBody = {
   regenerate?: boolean
 }
 
-export function AnalyzeView({ brand }: { brand: string }) {
+export function AnalyzeView({
+  brand,
+  onSendToCreate,
+}: {
+  brand: string
+  onSendToCreate?: (draftId: string) => void
+}) {
   const [loading, setLoading] = useState(false)
   const [recipes, setRecipes] = useState<Recipe[] | null>(null)
   const [authExpired, setAuthExpired] = useState(false)
@@ -139,7 +132,21 @@ export function AnalyzeView({ brand }: { brand: string }) {
         <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {recipes.map(r => (
             <li key={r.recipe_id}>
-              <RecipeCard recipe={r} />
+              <RecipeCard
+                recipe={r}
+                actions={
+                  onSendToCreate && r.draft_id ? (
+                    <button
+                      onClick={() => onSendToCreate(r.draft_id as string)}
+                      className="px-3 py-1.5 rounded-full text-xs bg-text-primary text-white flex items-center gap-1.5"
+                      aria-label={`Open ${r.hook} in Create`}
+                    >
+                      <ArrowRight size={12} />
+                      Open in Create
+                    </button>
+                  ) : null
+                }
+              />
             </li>
           ))}
         </ul>
@@ -151,35 +158,6 @@ export function AnalyzeView({ brand }: { brand: string }) {
         </div>
       )}
     </div>
-  )
-}
-
-function RecipeCard({ recipe }: { recipe: Recipe }) {
-  return (
-    <article
-      data-testid="recipe-card"
-      className="glass rounded-2xl p-4 flex flex-col gap-2 h-full"
-    >
-      <header className="flex items-center justify-between gap-2">
-        <span className="text-xs text-text-muted uppercase tracking-wide">
-          {recipe.angle}
-        </span>
-        <span className="text-[10px] text-text-muted">
-          {recipe.funnel_position} · {recipe.format}
-        </span>
-      </header>
-      <h3 className="text-sm font-medium text-text-primary leading-snug">
-        {recipe.hook}
-      </h3>
-      <p className="text-xs text-text-muted">
-        For <span className="text-text-primary">{recipe.persona}</span> · {recipe.product}
-      </p>
-      <p className="text-xs text-text-muted line-clamp-3">{recipe.rationale}</p>
-      <footer className="mt-auto pt-2 flex items-center justify-between text-[10px] text-text-muted">
-        <span>{recipe.fal_model_hint}</span>
-        <span>{recipe.source_winner_ids.length} winner(s)</span>
-      </footer>
-    </article>
   )
 }
 

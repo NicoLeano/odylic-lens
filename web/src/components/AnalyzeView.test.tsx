@@ -97,6 +97,18 @@ describe('AnalyzeView', () => {
     expect(screen.getByText(/Cacao caliente, mente quieta/)).toBeInTheDocument()
   })
 
+  test('Open in Create action surfaces persisted draft id', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const onSendToCreate = vi.fn()
+    mockFetch(async () => okResponse({ recipes: [{ ...RECIPE, draft_id: 'draft-1' }] }))
+
+    render(<AnalyzeView brand="DOSE OF" onSendToCreate={onSendToCreate} />)
+    await user.click(screen.getByRole('button', { name: /generate recipes/i }))
+    await user.click(await screen.findByRole('button', { name: /open .* in create/i }))
+
+    expect(onSendToCreate).toHaveBeenCalledWith('draft-1')
+  })
+
   test('401 ClaudeAuthExpired renders the Re-authenticate card with copy command', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     mockFetch(async () =>
