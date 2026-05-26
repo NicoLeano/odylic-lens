@@ -367,6 +367,31 @@ def test_analyze_cache_invalidates_on_profile_change(client):
     assert mock_call.call_count == 2
 
 
+def test_analyze_cache_distinguishes_video_frame_requests(client):
+    """Frame-enabled prompts must not reuse no-frame cached recipes."""
+    with patch(
+        "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_VIDEO]
+    ), patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints._frames_for_winners", return_value=[]
+    ), patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ) as mock_call, patch(
+        "analyze_endpoints._save_proposed_drafts"
+    ):
+        body = {"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1}
+        client.post(
+            "/api/recipes/analyze", json={**body, "include_video_frames": False}
+        )
+        client.post(
+            "/api/recipes/analyze", json={**body, "include_video_frames": True}
+        )
+
+    assert mock_call.call_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Video frames (decision 2D integration)
 # ---------------------------------------------------------------------------

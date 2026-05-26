@@ -75,6 +75,7 @@ describe('AnalyzeView', () => {
     expect(init.method).toBe('POST')
     const sent = JSON.parse(init.body)
     expect(sent.brand).toBe('DOSE OF')
+    expect(sent.include_video_frames).toBe(false)
     expect(sent.regenerate).toBe(false)
   })
 

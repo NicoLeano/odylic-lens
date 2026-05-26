@@ -52,7 +52,7 @@ export function AnalyzeView({ brand }: { brand: string }) {
       brand,
       top_n_winners: 10,
       n_recipes: 5,
-      include_video_frames: true,
+      include_video_frames: false,
       regenerate,
     }
     try {

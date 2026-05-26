@@ -37,6 +37,8 @@ router = APIRouter()
 
 CACHE_TTL_SECONDS = 24 * 3600
 _CACHE: dict[str, tuple[float, dict]] = {}
+PROFILE_TEXT_MAX_CHARS = 300
+WINNER_TEXT_MAX_CHARS = 240
 
 _SYSTEM_PROMPT = (
     "You are a creative strategist who studies winning ads and proposes "
@@ -77,7 +79,7 @@ class AnalyzeRequest(BaseModel):
     top_n_winners: int = Field(default=10, ge=1, le=50)
     focus_product: Optional[str] = None
     n_recipes: int = Field(default=5, ge=1, le=20)
-    include_video_frames: bool = True
+    include_video_frames: bool = False
     regenerate: bool = False
 
 
@@ -128,9 +130,13 @@ def _profile_content_hash(profile: dict) -> str:
 
 
 def _cache_key(
-    brand: str, winners: list[dict], n_recipes: int, profile: dict
+    brand: str,
+    winners: list[dict],
+    n_recipes: int,
+    profile: dict,
+    include_video_frames: bool = False,
 ) -> str:
-    """Stable hash for (brand, winner ids, n_recipes, profile content)."""
+    """Stable hash for (brand, winner ids, n_recipes, profile content, frames)."""
     ids = sorted(str(w.get("ad_id", "")) for w in winners)
     payload = json.dumps(
         {
@@ -138,6 +144,7 @@ def _cache_key(
             "ids": ids,
             "n": n_recipes,
             "profile_hash": _profile_content_hash(profile),
+            "include_video_frames": include_video_frames,
         },
         sort_keys=True,
     )
@@ -175,7 +182,7 @@ def _build_prompt(
     )
 
 
-def _clip_text(value: Any, max_chars: int = 500) -> str:
+def _clip_text(value: Any, max_chars: int = PROFILE_TEXT_MAX_CHARS) -> str:
     text = str(value or "").strip()
     if len(text) <= max_chars:
         return text
@@ -190,13 +197,13 @@ def _prompt_safe_value(value: Any, depth: int = 2) -> Any:
     if isinstance(value, (int, float, bool)):
         return value
     if depth <= 0:
-        return _clip_text(json.dumps(value, ensure_ascii=False), max_chars=300)
+        return _clip_text(json.dumps(value, ensure_ascii=False), max_chars=200)
     if isinstance(value, list):
-        compacted = [_prompt_safe_value(v, depth - 1) for v in value[:8]]
+        compacted = [_prompt_safe_value(v, depth - 1) for v in value[:5]]
         return [v for v in compacted if v not in (None, "", [], {})]
     if isinstance(value, dict):
         compacted: dict[str, Any] = {}
-        for key, child in list(value.items())[:12]:
+        for key, child in list(value.items())[:8]:
             safe = _prompt_safe_value(child, depth - 1)
             if safe not in (None, "", [], {}):
                 compacted[str(key)] = safe
@@ -236,8 +243,10 @@ def _compact_winner_for_prompt(winner: dict) -> dict:
         value = winner.get(key)
         if value in (None, "", [], {}):
             continue
-        if key in {"hook", "body", "product", "name", "campaign_name", "adset_name"}:
-            compacted[key] = _clip_text(value)
+        if key == "body":
+            compacted[key] = _clip_text(value, WINNER_TEXT_MAX_CHARS)
+        elif key in {"hook", "product", "name", "campaign_name", "adset_name"}:
+            compacted[key] = _clip_text(value, max_chars=160)
         else:
             compacted[key] = value
     return compacted
@@ -369,7 +378,13 @@ def analyze_recipes(req: AnalyzeRequest) -> dict:
     winners = _fetch_top_winners(req.brand, req.top_n_winners, req.focus_product)
     profile = brand_profile_store.get_profile(req.brand) or {}
 
-    key = _cache_key(req.brand, winners, req.n_recipes, profile)
+    key = _cache_key(
+        req.brand,
+        winners,
+        req.n_recipes,
+        profile,
+        include_video_frames=req.include_video_frames,
+    )
     now = time.time()
     if not req.regenerate:
         cached = _CACHE.get(key)
