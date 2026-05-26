@@ -167,3 +167,50 @@ def test_call_api_routes_system_prompt_correctly():
 def test_call_invalid_strategy_raises():
     with pytest.raises(ValueError):
         claude_client.call(strategy="bogus", prompt="p")
+
+
+# ---------------------------------------------------------------------------
+# TODO-004 / TODO-005 hardening
+# ---------------------------------------------------------------------------
+
+
+def test_parse_json_loose_returns_first_balanced_block():
+    """TODO-004: greedy regex would match `{"a":1} actual: {"angle":...}` and
+    fail JSONDecode. Brace-depth scanner returns the FIRST balanced block."""
+    out = claude_client._parse_json_loose(
+        'Example: {"a": 1} actual: {"angle": "Benefits"}'
+    )
+    assert out == {"a": 1}
+
+
+def test_parse_json_loose_handles_braces_inside_strings():
+    """Closing braces inside string literals must NOT close the object."""
+    out = claude_client._parse_json_loose('Here: {"k": "value with } inside"}')
+    assert out == {"k": "value with } inside"}
+
+
+def test_subprocess_timeout_raises_runtime_error():
+    """TODO-005 #1: subprocess.TimeoutExpired → RuntimeError, not raw."""
+    with patch("claude_client.subprocess.run") as run:
+        run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=120)
+        with pytest.raises(RuntimeError) as exc:
+            claude_client.call(strategy="subprocess", prompt="p", timeout=120)
+    assert "timed out" in str(exc.value).lower()
+
+
+def test_subprocess_empty_stdout_raises_runtime_error():
+    """TODO-005 #2: returncode=0 + empty stdout → clear RuntimeError."""
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(stdout="   \n", returncode=0)
+        with pytest.raises(RuntimeError) as exc:
+            claude_client.call(strategy="subprocess", prompt="p")
+    assert "empty stdout" in str(exc.value).lower()
+
+
+def test_mime_for_unknown_extension_raises_value_error(tmp_path: Path):
+    """TODO-005 #3: unknown frame ext fails fast, not silent image/png."""
+    bad = tmp_path / "x.webp"
+    bad.write_bytes(b"\x00")
+    with pytest.raises(ValueError) as exc:
+        claude_client._mime_for(str(bad))
+    assert "webp" in str(exc.value).lower()

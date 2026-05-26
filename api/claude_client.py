@@ -29,8 +29,6 @@ _MIME_BY_EXT = {
 
 _AUTH_PATTERNS = (re.compile(r"auth", re.I), re.compile(r"expired", re.I), re.compile(r"401", re.I))
 
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
-
 
 class ClaudeAuthExpired(RuntimeError):
     """Subprocess Claude CLI returned an auth / 401 / expired error."""
@@ -47,19 +45,66 @@ def _get_anthropic_key() -> Optional[str]:
 
 
 def _mime_for(path: str) -> str:
-    return _MIME_BY_EXT.get(Path(path).suffix.lower(), "image/png")
+    ext = Path(path).suffix.lower()
+    mime = _MIME_BY_EXT.get(ext)
+    if mime is None:
+        raise ValueError(f"unsupported frame extension {ext!r}")
+    return mime
+
+
+def _first_balanced_json_block(text: str) -> Optional[str]:
+    """Return the first balanced `{...}` substring, honoring string literals.
+
+    Cheap state machine over `text`:
+    - tracks brace depth
+    - ignores braces inside `"..."` string literals
+    - honors backslash escapes inside strings
+    Returns None when no balanced block exists.
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0 and start != -1:
+                return text[start : i + 1]
+    return None
 
 
 def _parse_json_loose(text: str) -> dict:
-    """Parse JSON, falling back to a `{...}` block embedded in wrap text."""
+    """Parse JSON, falling back to the first balanced `{...}` block."""
     stripped = text.strip()
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         pass
-    m = _JSON_BLOCK_RE.search(stripped)
-    if m:
-        return json.loads(m.group(0))
+    block = _first_balanced_json_block(stripped)
+    if block is not None:
+        try:
+            return json.loads(block)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"first balanced JSON block did not parse: {e}; block={block[:200]!r}"
+            )
     raise ValueError(f"No JSON object found in output: {text[:200]!r}")
 
 
@@ -115,12 +160,19 @@ def _call_subprocess(
     for f in frames or []:
         args.extend(["--image", f])
 
-    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"claude CLI timed out after {timeout}s")
     if result.returncode != 0:
         stderr = result.stderr or ""
         if _is_auth_error(stderr):
             raise ClaudeAuthExpired(stderr.strip() or "Claude auth expired")
         raise RuntimeError(f"claude CLI exit {result.returncode}: {stderr.strip()}")
+    if not (result.stdout or "").strip():
+        raise RuntimeError("claude CLI returned empty stdout")
     return _parse_json_loose(result.stdout)
 
 
