@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+
 RECIPE = {
     "recipe_id": "recipe-1",
     "draft_id": "draft-1",
@@ -112,7 +114,7 @@ def test_upload_manual_asset_saves_file_and_promotes_to_draft(client, isolated_s
 
     response = client.post(
         "/api/drafts/draft-1/upload",
-        files={"file": ("creative.png", b"png-bytes", "image/png")},
+        files={"file": ("creative.png", PNG_BYTES, "image/png")},
     )
 
     assert response.status_code == 200
@@ -127,7 +129,35 @@ def test_upload_manual_asset_saves_file_and_promotes_to_draft(client, isolated_s
             ("draft-1",),
         ).fetchone()
     assert row["mime_type"] == "image/png"
-    assert Path(row["path"]).read_bytes() == b"png-bytes"
+    assert Path(row["path"]).read_bytes() == PNG_BYTES
+
+
+def test_upload_rejects_spoofed_content_type(client, isolated_store, tmp_path):
+    _insert_recipe(isolated_store)
+
+    response = client.post(
+        "/api/drafts/draft-1/upload",
+        files={"file": ("creative.png", b"<script>alert(1)</script>", "image/png")},
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported upload type" in response.json()["detail"]
+    assert list((tmp_path / "drafts").rglob("*")) == []
+
+
+def test_upload_rejects_mismatched_content_type(client, isolated_store, tmp_path):
+    _insert_recipe(isolated_store)
+
+    response = client.post(
+        "/api/drafts/draft-1/upload",
+        files={"file": ("creative.jpg", PNG_BYTES, "image/jpeg")},
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+    with isolated_store._connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM draft_assets").fetchone()[0]
+    assert count == 0
 
 
 def test_generate_video_records_assets_without_holding_store_lock(

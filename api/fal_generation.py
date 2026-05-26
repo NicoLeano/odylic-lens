@@ -6,11 +6,13 @@ the drafts gallery stays useful after short-lived CDN URLs expire.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import mimetypes
 import os
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
+import uuid
 
 import fal_client
 import requests
@@ -122,11 +124,47 @@ def _download_asset(url: str, output_dir: Path, variant_idx: int, timeout: int =
     ext = _extension_for(mime_type, url)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"variant-{variant_idx + 1}{ext}"
+    if path.exists():
+        path = output_dir / f"variant-{variant_idx + 1}-{uuid.uuid4().hex[:8]}{ext}"
     with open(path, "wb") as f:
         for chunk in response.iter_content(chunk_size=1024 * 512):
             if chunk:
                 f.write(chunk)
     return {"path": str(path), "mime_type": mime_type, "variant_idx": variant_idx}
+
+
+def _remove_files(paths: list[str]) -> None:
+    for path in paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _run_variant(
+    *,
+    prompt: str,
+    output_dir: Path,
+    model: str,
+    arguments: dict[str, Any],
+    variant_idx: int,
+    timeout: int,
+) -> dict:
+    try:
+        result = fal_client.run(
+            model,
+            arguments={"prompt": prompt, **arguments},
+            timeout=timeout,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"fal.ai generation failed: {exc}") from exc
+    urls = _extract_asset_urls(result)
+    if not urls:
+        raise RuntimeError(f"fal.ai returned no media URL: {result}")
+    asset = _download_asset(urls[0], output_dir, variant_idx)
+    asset["fal_model_used"] = model
+    asset["cost_usd"] = _cost_from_result(result)
+    return asset
 
 
 def generate_video(
@@ -146,21 +184,54 @@ def generate_video(
 
     count = min(max(int(variant_count or 1), 1), 4)
     model = (model_id or DEFAULT_VIDEO_MODEL).strip()
+    normalized_arguments = dict(arguments or {})
     downloaded: list[dict] = []
-    for variant_idx in range(count):
-        try:
-            result = fal_client.run(
-                model,
-                arguments={"prompt": clean_prompt, **(arguments or {})},
-                timeout=timeout,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"fal.ai generation failed: {exc}") from exc
-        urls = _extract_asset_urls(result)
-        if not urls:
-            raise RuntimeError(f"fal.ai returned no media URL: {result}")
-        asset = _download_asset(urls[0], output_dir, variant_idx)
-        asset["fal_model_used"] = model
-        asset["cost_usd"] = _cost_from_result(result)
-        downloaded.append(asset)
-    return downloaded
+    preexisting_paths = {
+        path.resolve()
+        for path in output_dir.glob("variant-*")
+        if path.is_file()
+    }
+    try:
+        if count == 1:
+            return [
+                _run_variant(
+                    prompt=clean_prompt,
+                    output_dir=output_dir,
+                    model=model,
+                    arguments=normalized_arguments,
+                    variant_idx=0,
+                    timeout=timeout,
+                )
+            ]
+
+        by_idx: dict[int, dict] = {}
+        with ThreadPoolExecutor(max_workers=count) as pool:
+            futures = {
+                pool.submit(
+                    _run_variant,
+                    prompt=clean_prompt,
+                    output_dir=output_dir,
+                    model=model,
+                    arguments=normalized_arguments,
+                    variant_idx=variant_idx,
+                    timeout=timeout,
+                ): variant_idx
+                for variant_idx in range(count)
+            }
+            for future in as_completed(futures):
+                asset = future.result()
+                by_idx[asset["variant_idx"]] = asset
+                downloaded.append(asset)
+        return [by_idx[i] for i in range(count)]
+    except Exception:
+        _remove_files(
+            [
+                str(path)
+                for path in output_dir.glob("*")
+                if path.is_file()
+                and path.name.startswith("variant-")
+                and path.resolve() not in preexisting_paths
+            ]
+        )
+        _remove_files([str(asset.get("path")) for asset in downloaded if asset.get("path")])
+        raise
