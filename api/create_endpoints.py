@@ -42,6 +42,8 @@ _KNOWN_FAL_VIDEO_MODELS = {
     "kling-video": fal_generation.DEFAULT_VIDEO_MODEL,
     "kling-standard": fal_generation.DEFAULT_VIDEO_MODEL,
     "kling-video/v1.6/standard": fal_generation.DEFAULT_VIDEO_MODEL,
+    "kling-video/v1.6/standard/text-to-video": fal_generation.DEFAULT_VIDEO_MODEL,
+    "fal-ai/kling-video/v1.6/standard": fal_generation.DEFAULT_VIDEO_MODEL,
     fal_generation.DEFAULT_VIDEO_MODEL: fal_generation.DEFAULT_VIDEO_MODEL,
 }
 

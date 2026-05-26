@@ -90,6 +90,12 @@ def test_video_model_resolver_allows_only_known_tokens():
         == fal_generation.DEFAULT_VIDEO_MODEL
     )
     assert (
+        _video_model_for(
+            {"fal_model_hint": "fal-ai/kling-video/v1.6/standard/text-to-video"}, None
+        )
+        == fal_generation.DEFAULT_VIDEO_MODEL
+    )
+    assert (
         _video_model_for({"fal_model_hint": "hunyuan cinematic motion"}, None)
         == fal_generation.DEFAULT_VIDEO_MODEL
     )
@@ -190,6 +196,8 @@ def test_upload_rejects_mismatched_content_type(client, isolated_store, tmp_path
 def test_generate_video_records_assets_without_holding_store_lock(
     client, isolated_store, monkeypatch
 ):
+    import fal_generation
+
     _insert_recipe(isolated_store)
 
     class TrackingLock:
@@ -229,7 +237,7 @@ def test_generate_video_records_assets_without_holding_store_lock(
     assert draft["status"] == "draft"
     assert draft["assets"][0]["mime_type"] == "video/mp4"
     assert draft["assets"][0]["cost_usd"] == 0.31
-    assert draft["assets"][0]["fal_model_used"] == "fal-ai/kling-video/v1.6/standard"
+    assert draft["assets"][0]["fal_model_used"] == fal_generation.DEFAULT_VIDEO_MODEL
 
 
 def test_generate_video_sentence_hint_uses_default_model(client, isolated_store):

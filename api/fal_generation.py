@@ -17,7 +17,7 @@ import uuid
 import fal_client
 import requests
 
-DEFAULT_VIDEO_MODEL = "fal-ai/kling-video/v1.6/standard"
+DEFAULT_VIDEO_MODEL = "fal-ai/kling-video/v1.6/standard/text-to-video"
 _ALLOWED_MIME_PREFIXES = ("image/", "video/")
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",

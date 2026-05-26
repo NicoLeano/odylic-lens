@@ -42,10 +42,10 @@ def test_generate_video_runs_fal_and_downloads_file(tmp_path, monkeypatch):
         assets = fal_generation.generate_video(
             prompt="Make a vertical product video",
             output_dir=tmp_path,
-            model_id="fal-ai/kling-video/v1.6/standard",
+            model_id=fal_generation.DEFAULT_VIDEO_MODEL,
         )
 
-    assert run.call_args.args[0] == "fal-ai/kling-video/v1.6/standard"
+    assert run.call_args.args[0] == fal_generation.DEFAULT_VIDEO_MODEL
     assert run.call_args.kwargs["arguments"]["prompt"] == "Make a vertical product video"
     assert get.call_args.args[0] == "https://fal.ai/result.mp4"
     assert assets[0]["mime_type"] == "video/mp4"

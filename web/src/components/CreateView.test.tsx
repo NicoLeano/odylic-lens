@@ -46,7 +46,7 @@ const ASSET_DRAFT: Draft = {
       draft_id: 'draft-1',
       variant_idx: 0,
       mime_type: 'video/mp4',
-      fal_model_used: 'fal-ai/kling-video/v1.6/standard',
+      fal_model_used: 'fal-ai/kling-video/v1.6/standard/text-to-video',
       cost_usd: 0.31,
       created_at: 102,
       filename: 'variant-1.mp4',
