@@ -44,6 +44,33 @@ _SYSTEM_PROMPT = (
     "angles without abandoning the brand. Return valid JSON only."
 )
 
+_PROFILE_PROMPT_KEYS = (
+    "description",
+    "positioning_statement",
+    "tagline",
+    "mission_statement",
+    "primary_persona",
+    "target_audience",
+    "target_personas",
+    "secondary_personas",
+    "products",
+    "hero_products",
+    "unique_value_props",
+    "functional_benefits",
+    "emotional_benefits",
+    "proof_points",
+    "objections",
+    "voice",
+    "voice_tone",
+    "voice_attributes",
+    "do_say",
+    "dont_say",
+    "claims_allowed",
+    "claims_avoided",
+    "competitive_frame",
+    "differentiator",
+)
+
 
 class AnalyzeRequest(BaseModel):
     brand: str
@@ -121,13 +148,15 @@ def _build_prompt(
     brand_ctx: dict, winners: list[dict], n_recipes: int
 ) -> str:
     """Compose the user prompt for Claude. Tested via 9A snapshot."""
+    prompt_brand_ctx = _compact_profile_for_prompt(brand_ctx)
+    prompt_winners = [_compact_winner_for_prompt(w) for w in winners]
     return "\n".join(
         [
             "Brand context:",
-            json.dumps(brand_ctx or {}, ensure_ascii=False, indent=2),
+            json.dumps(prompt_brand_ctx, ensure_ascii=False, indent=2),
             "",
             "Top winning ads (most recent 30-day audit):",
-            json.dumps(winners, ensure_ascii=False, indent=2),
+            json.dumps(prompt_winners, ensure_ascii=False, indent=2),
             "",
             f"Recommend {n_recipes} new ad concepts that build on the patterns",
             "in the winners but explore fresh angles. Match the brand voice.",
@@ -144,6 +173,74 @@ def _build_prompt(
             ),
         ]
     )
+
+
+def _clip_text(value: Any, max_chars: int = 500) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+def _prompt_safe_value(value: Any, depth: int = 2) -> Any:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, str):
+        return _clip_text(value)
+    if isinstance(value, (int, float, bool)):
+        return value
+    if depth <= 0:
+        return _clip_text(json.dumps(value, ensure_ascii=False), max_chars=300)
+    if isinstance(value, list):
+        compacted = [_prompt_safe_value(v, depth - 1) for v in value[:8]]
+        return [v for v in compacted if v not in (None, "", [], {})]
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, child in list(value.items())[:12]:
+            safe = _prompt_safe_value(child, depth - 1)
+            if safe not in (None, "", [], {}):
+                compacted[str(key)] = safe
+        return compacted or None
+    return _clip_text(value)
+
+
+def _compact_profile_for_prompt(profile: dict) -> dict:
+    compacted: dict[str, Any] = {}
+    for key in _PROFILE_PROMPT_KEYS:
+        if key not in (profile or {}):
+            continue
+        safe = _prompt_safe_value(profile.get(key))
+        if safe not in (None, "", [], {}):
+            compacted[key] = safe
+    return compacted
+
+
+def _compact_winner_for_prompt(winner: dict) -> dict:
+    fields = (
+        "ad_id",
+        "name",
+        "campaign_name",
+        "adset_name",
+        "spend",
+        "roas",
+        "purchases",
+        "cpa",
+        "creative_type",
+        "hook",
+        "body",
+        "product",
+        "source_status",
+    )
+    compacted: dict[str, Any] = {}
+    for key in fields:
+        value = winner.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if key in {"hook", "body", "product", "name", "campaign_name", "adset_name"}:
+            compacted[key] = _clip_text(value)
+        else:
+            compacted[key] = value
+    return compacted
 
 
 def _num(value: Any) -> float:

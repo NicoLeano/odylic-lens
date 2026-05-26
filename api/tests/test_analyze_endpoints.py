@@ -485,3 +485,27 @@ def test_build_prompt_includes_brand_winners_and_count():
     # JSON shape hint surfaces (so model returns parseable structure)
     assert "recipes" in prompt
     assert "angle" in prompt
+
+
+def test_build_prompt_compacts_large_profile_and_omits_media_urls():
+    from analyze_endpoints import _build_prompt
+
+    profile = {
+        **_FAKE_BRAND_PROFILE,
+        "logo_url": "https://cdn.example.com/logo.png",
+        "products": [{"name": "Calm Cacao", "notes": "x" * 1000}],
+        "unused_blob": "y" * 5000,
+    }
+    winner = {
+        **_FAKE_WINNER_VIDEO,
+        "body": "z" * 1000,
+        "video_url": "https://scontent.cdn/very-long-video-url.mp4",
+    }
+
+    prompt = _build_prompt(brand_ctx=profile, winners=[winner], n_recipes=1)
+
+    assert "Calm Cacao" in prompt
+    assert _FAKE_WINNER_VIDEO["ad_id"] in prompt
+    assert "very-long-video-url" not in prompt
+    assert "unused_blob" not in prompt
+    assert len(prompt) < 5000
