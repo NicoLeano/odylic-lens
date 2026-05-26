@@ -67,6 +67,48 @@ Regression tests in `tests/test_claude_client.py`. 17/17 pass.
 
 ---
 
+## TODO-006: Phase 3.5 — make multi-variant fal.ai generation non-blocking
+
+**What:** Replace the sequential `variant_count` loop in `fal_generation.generate_video()` with bounded parallelism or the fal.ai submit/poll API.
+
+**Why:** Phase 3 correctly keeps the database lock released during fal.ai calls, but `variant_count > 1` can still hold one HTTP request for several minutes. The frontend currently hardcodes `variant_count: 1`, so user risk is low, but the backend accepts up to 4 variants.
+
+**Acceptance:**
+- Multi-variant generation runs concurrently with bounded workers, or uses `fal_client.submit` plus polling.
+- The Create route still does not hold `store._LOCK` during fal.ai work.
+- Existing single-variant behavior and response shape stay compatible.
+- Regression coverage pins the no-DB-lock behavior during generation.
+
+---
+
+## TODO-007: Phase 3.5 — sniff upload media bytes before storing draft assets
+
+**What:** Validate uploaded image/video bytes instead of trusting the multipart content type or filename extension.
+
+**Why:** Phase 3 manual uploads currently use `UploadFile.content_type` and extension fallback. A spoofed request could store bytes under an attacker-chosen media type and replay them through `/api/draft-assets/{asset_id}/file`. Blast radius is local single-tenant/self-XSS, but byte sniffing is the correct boundary.
+
+**Acceptance:**
+- Validate upload bytes with a real detector, e.g. `python-magic`, or a small allowlisted signature check.
+- Reject mismatched or unknown image/video types before inserting `draft_assets`.
+- Return a clear HTTP 400 for unsupported media.
+- Add route tests for spoofed content type and valid image/video upload.
+
+---
+
+## TODO-008: Phase 3.5 — clean orphan files on multi-variant fal.ai failure
+
+**What:** Remove files downloaded during a failed multi-variant fal.ai request before returning an error.
+
+**Why:** Phase 3 inserts asset rows transactionally, but if `variant_count > 1` and a later fal.ai call/download fails, earlier downloaded files from that same request can remain on disk without matching `draft_assets` rows. The frontend currently requests one variant, but the backend allows up to 4.
+
+**Acceptance:**
+- Generation failures remove files downloaded during the failed request.
+- Existing successful draft assets are not deleted.
+- Add test coverage for a mid-loop failure leaving no new files behind.
+- Keep existing transactional DB insert behavior unchanged.
+
+---
+
 ## TODO-003: Cost dashboard (per-stage spend visibility)
 
 **What:** Add a Settings → Costs panel that surfaces month-to-date spend per stage: Anthropic API (audit tagging via Haiku), Claude Code subscription session usage (Analyze stage, $0 marginal but useful for cap visibility), fal.ai per-generation cost (Create stage). Pull from each vendor's API where possible, fall back to local SQLite log otherwise.
