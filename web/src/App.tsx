@@ -6,9 +6,10 @@
 
 import { useEffect, useState, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Loader2, Sparkles, Wand2, Settings as SettingsIcon, KeyRound, LogOut } from 'lucide-react'
+import { Clapperboard, Loader2, Sparkles, Wand2, Settings as SettingsIcon, KeyRound, LogOut } from 'lucide-react'
 import { AdAnalysisView, preloadAds } from './components/AdAnalysisView'
 import { AnalyzeView } from './components/AnalyzeView'
+import { CreateView } from './components/CreateView'
 import { BrandSelector } from './components/BrandSelector'
 import { DatePicker } from './components/DatePicker'
 import Landing from './pages/Landing'
@@ -47,18 +48,19 @@ function defaultDateRange(): { start: string; end: string } {
   return { start: fmt(start), end: fmt(yesterday) }
 }
 
-type Tab = 'creatives' | 'analyze' | 'brand' | 'settings'
+type Tab = 'creatives' | 'analyze' | 'create' | 'brand' | 'settings'
 
 function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const q = new URLSearchParams(window.location.search).get('tab')
-    if (q === 'analyze' || q === 'brand' || q === 'settings') return q
+    if (q === 'analyze' || q === 'create' || q === 'brand' || q === 'settings') return q
     return 'creatives'
   })
   const [brands, setBrands] = useState<Brand[]>([])
   const [profiles, setProfiles] = useState<Record<string, { favicon?: string | null; domain?: string; description?: string }>>({})
   const [selectedBrands, setSelectedBrands] = useState<string[]>([])
   const [brandSettingsTarget, setBrandSettingsTarget] = useState<string | null>(null)
+  const [createFocusDraftId, setCreateFocusDraftId] = useState<string | null>(null)
   const [{ start: initStart, end: initEnd }] = useState(defaultDateRange)
   const [dateRange, setDateRange] = useState({ start: initStart, end: initEnd })
   const [compareStart, setCompareStart] = useState('')
@@ -118,6 +120,7 @@ function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
         {([
           { k: 'creatives' as const, icon: Sparkles, title: 'Creative Analysis' },
           { k: 'analyze' as const, icon: Wand2, title: 'Recipe Analyze' },
+          { k: 'create' as const, icon: Clapperboard, title: 'Create' },
           { k: 'brand' as const, icon: SettingsIcon, title: 'Brand Settings' },
           { k: 'settings' as const, icon: KeyRound, title: 'API Settings' },
         ]).map(({ k, icon: Icon, title }) => (
@@ -229,7 +232,16 @@ function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
               />
             )}
             {activeTab === 'analyze' && (
-              <AnalyzeView brand={primaryBrand} />
+              <AnalyzeView
+                brand={primaryBrand}
+                onSendToCreate={(draftId) => {
+                  setCreateFocusDraftId(draftId)
+                  setActiveTab('create')
+                }}
+              />
+            )}
+            {activeTab === 'create' && (
+              <CreateView brand={primaryBrand} focusDraftId={createFocusDraftId} />
             )}
             {activeTab === 'brand' && (
               (brandSettingsTarget || primaryBrand) ? (

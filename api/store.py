@@ -587,6 +587,8 @@ def list_brand_sections(brand: str) -> dict[str, dict]:
 # Analyze/Create drafts
 # ─────────────────────────────────────────────────────────────────────
 
+DRAFT_STATUSES = {"proposed", "ready", "draft", "launched", "discarded"}
+
 
 def insert_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
     """Insert Analyze recipes as `proposed` drafts in one transaction.
@@ -645,3 +647,272 @@ def insert_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
             conn.execute("ROLLBACK")
             raise
     return written
+
+
+def _load_json(value: str, fallback: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except Exception:
+        return fallback
+
+
+def _asset_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "asset_id": row["asset_id"],
+        "draft_id": row["draft_id"],
+        "variant_idx": row["variant_idx"],
+        "path": row["path"],
+        "mime_type": row["mime_type"],
+        "fal_model_used": row["fal_model_used"],
+        "cost_usd": row["cost_usd"],
+        "created_at": row["created_at"],
+    }
+
+
+def _draft_from_row(row: sqlite3.Row, assets: Optional[list[dict]] = None) -> dict:
+    recipe = _load_json(row["recipe_json"], {})
+    source_winner_ids = _load_json(row["source_winner_ids"], [])
+    return {
+        "draft_id": row["draft_id"],
+        "recipe_id": row["recipe_id"],
+        "brand": row["brand"],
+        "status": row["status"],
+        "recipe": recipe if isinstance(recipe, dict) else {},
+        "source_winner_ids": source_winner_ids if isinstance(source_winner_ids, list) else [],
+        "meta_ad_id": row["meta_ad_id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "assets": assets or [],
+    }
+
+
+def _validate_draft_status(status: str) -> str:
+    if status not in DRAFT_STATUSES:
+        raise ValueError(f"invalid draft status: {status}")
+    return status
+
+
+def _validate_draft_statuses(statuses: Optional[list[str]]) -> list[str]:
+    if not statuses:
+        return ["proposed", "ready", "draft", "launched"]
+    out: list[str] = []
+    for status in statuses:
+        for part in str(status).split(","):
+            clean = part.strip()
+            if not clean:
+                continue
+            out.append(_validate_draft_status(clean))
+    return out or ["proposed", "ready", "draft", "launched"]
+
+
+def _assets_by_draft(conn: sqlite3.Connection, draft_ids: list[str]) -> dict[str, list[dict]]:
+    if not draft_ids:
+        return {}
+    placeholders = ",".join("?" for _ in draft_ids)
+    rows = conn.execute(
+        "SELECT asset_id, draft_id, variant_idx, path, mime_type, fal_model_used, cost_usd, created_at "
+        f"FROM draft_assets WHERE draft_id IN ({placeholders}) "
+        "ORDER BY draft_id, variant_idx ASC, created_at ASC",
+        draft_ids,
+    ).fetchall()
+    by_draft: dict[str, list[dict]] = {draft_id: [] for draft_id in draft_ids}
+    for row in rows:
+        by_draft.setdefault(row["draft_id"], []).append(_asset_from_row(row))
+    return by_draft
+
+
+def list_drafts(
+    brand: str,
+    statuses: Optional[list[str]] = None,
+    *,
+    limit: int = 50,
+    after: Optional[int] = None,
+    include_assets: bool = True,
+) -> list[dict]:
+    """List drafts for the Create tab, newest first.
+
+    ``after`` is a simple created_at cursor used by the gallery. The row
+    limit is capped so an old local database cannot accidentally dump the
+    whole archive into one response.
+    """
+    if not brand:
+        raise ValueError("brand is required")
+    status_list = _validate_draft_statuses(statuses)
+    limit = min(max(int(limit or 50), 1), 100)
+
+    clauses = ["brand = ?"]
+    params: list[Any] = [brand]
+    placeholders = ",".join("?" for _ in status_list)
+    clauses.append(f"status IN ({placeholders})")
+    params.extend(status_list)
+    if after is not None:
+        clauses.append("created_at < ?")
+        params.append(int(after))
+    params.append(limit)
+
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
+            "meta_ad_id, created_at, updated_at "
+            f"FROM drafts WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC, draft_id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        draft_ids = [row["draft_id"] for row in rows]
+        assets = _assets_by_draft(conn, draft_ids) if include_assets else {}
+
+    return [_draft_from_row(row, assets.get(row["draft_id"], [])) for row in rows]
+
+
+def get_draft(draft_id: str, *, include_assets: bool = True) -> Optional[dict]:
+    if not draft_id:
+        raise ValueError("draft_id is required")
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
+            "meta_ad_id, created_at, updated_at FROM drafts WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()
+        if not row:
+            return None
+        assets = _assets_by_draft(conn, [draft_id]).get(draft_id, []) if include_assets else []
+    return _draft_from_row(row, assets)
+
+
+def set_draft_status(
+    draft_id: str,
+    status: str,
+    *,
+    meta_ad_id: Optional[str] = None,
+) -> Optional[dict]:
+    status = _validate_draft_status(status)
+    now = int(time.time())
+    with _LOCK, _connect() as conn:
+        if meta_ad_id is None:
+            cur = conn.execute(
+                "UPDATE drafts SET status = ?, updated_at = ? WHERE draft_id = ?",
+                (status, now, draft_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE drafts SET status = ?, meta_ad_id = ?, updated_at = ? WHERE draft_id = ?",
+                (status, meta_ad_id, now, draft_id),
+            )
+        if not cur.rowcount:
+            return None
+    return get_draft(draft_id)
+
+
+def insert_draft_assets(
+    draft_id: str,
+    assets: list[dict],
+    *,
+    status: str = "draft",
+) -> list[str]:
+    """Insert generated/uploaded assets and promote the draft transactionally."""
+    status = _validate_draft_status(status)
+    if not draft_id:
+        raise ValueError("draft_id is required")
+    if not assets:
+        raise ValueError("assets are required")
+
+    now = int(time.time())
+    rows: list[tuple[str, str, int, str, str, Optional[str], Optional[float], int]] = []
+    with _LOCK, _connect() as conn:
+        draft = conn.execute(
+            "SELECT draft_id FROM drafts WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()
+        if not draft:
+            raise ValueError("draft not found")
+        current_max = conn.execute(
+            "SELECT MAX(variant_idx) AS max_variant FROM draft_assets WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()["max_variant"]
+        next_variant = int(current_max) + 1 if current_max is not None else 0
+
+        for i, asset in enumerate(assets):
+            if not isinstance(asset, dict):
+                raise ValueError("each asset must be a dict")
+            path = str(asset.get("path") or "")
+            mime_type = str(asset.get("mime_type") or "")
+            if not path or not mime_type:
+                raise ValueError("asset path and mime_type are required")
+            variant_idx = asset.get("variant_idx")
+            if variant_idx is None:
+                variant_idx = next_variant + i
+            cost_usd = asset.get("cost_usd")
+            rows.append(
+                (
+                    str(asset.get("asset_id") or uuid.uuid4()),
+                    draft_id,
+                    int(variant_idx),
+                    path,
+                    mime_type,
+                    asset.get("fal_model_used"),
+                    float(cost_usd) if cost_usd is not None else None,
+                    now,
+                )
+            )
+
+        written: list[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO draft_assets "
+                    "(asset_id, draft_id, variant_idx, path, mime_type, fal_model_used, cost_usd, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    row,
+                )
+                written.append(row[0])
+            conn.execute(
+                "UPDATE drafts SET status = ?, updated_at = ? WHERE draft_id = ?",
+                (status, now, draft_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return written
+
+
+def get_draft_asset(asset_id: str) -> Optional[dict]:
+    if not asset_id:
+        raise ValueError("asset_id is required")
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT asset_id, draft_id, variant_idx, path, mime_type, fal_model_used, cost_usd, created_at "
+            "FROM draft_assets WHERE asset_id = ?",
+            (asset_id,),
+        ).fetchone()
+    return _asset_from_row(row) if row else None
+
+
+def delete_draft_asset(asset_id: str) -> Optional[dict]:
+    """Delete one asset row and return the removed row for file cleanup."""
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT asset_id, draft_id, variant_idx, path, mime_type, fal_model_used, cost_usd, created_at "
+            "FROM draft_assets WHERE asset_id = ?",
+            (asset_id,),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM draft_assets WHERE asset_id = ?", (asset_id,))
+    return _asset_from_row(row)
+
+
+def delete_draft(draft_id: str) -> Optional[dict]:
+    """Hard-delete one draft row. Foreign-key cascade removes asset rows."""
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
+            "meta_ad_id, created_at, updated_at FROM drafts WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()
+        if not row:
+            return None
+        assets = _assets_by_draft(conn, [draft_id]).get(draft_id, [])
+        conn.execute("DELETE FROM drafts WHERE draft_id = ?", (draft_id,))
+    return _draft_from_row(row, assets)

@@ -13,6 +13,12 @@
 - Build context: `dose-playbook/techstack/2026-05-25-lens-fork-build-plan.md`
 - Deferred work: `~/odylic-lens/TODOS.md`
 
+**Implementation status (2026-05-26):**
+- Phase 2 shipped and browser-verified on `main@3c9ffe7`.
+- Phase 2.5 hardening shipped on `main@29f61bd` (auth gate, draft lifecycle upsert, frame tempdir, FK pragma, cache key, route tests).
+- Phase 4 sunset completed externally; Lens is canonical creative ops, dose-creative paused and archived.
+- Phase 3 is implemented on `feat/create-stage` with actual modules `create_endpoints.py` + `fal_generation.py`: authenticated draft list/prepare/upload/generate/status/asset routes, normalized `draft_assets`, manual ChatGPT upload, fal.ai video generation, Create tab gallery, and Analyze → Create handoff. Local verification: 64/64 API tests, 12/12 frontend tests, production web build. Real fal.ai generation smoke is pending `FAL_KEY`.
+
 ---
 
 ## Plan review decisions (2026-05-25, via /plan-exit-review)
@@ -1789,12 +1795,12 @@ git push
 
 ### Phase 3 exit criteria
 
-- [ ] All Phase 3 tests pass (`pytest tests/ -v` → all green)
-- [ ] One image generated end-to-end from a Vital recipe → asset on disk + visible in gallery
-- [ ] One video generated end-to-end → mp4 on disk + visible
-- [ ] Drafts filter by brand correctly
-- [ ] Discard marks status, hides from default view
-- [ ] fal.ai cost tracked in `cost_usd` column (if API returns it; otherwise null OK for v1)
+- [x] All Phase 3 tests pass (`pytest api/tests -q` → 64/64, `npm test -- --run` → 12/12)
+- [x] Manual ChatGPT upload path saves asset to disk + visible in gallery (covered by route + UI tests)
+- [ ] One real fal.ai video generated end-to-end → mp4 on disk + visible (blocked locally until `FAL_KEY` is configured)
+- [x] Drafts filter by brand correctly
+- [x] Discard marks status, hides from default view
+- [x] fal.ai cost tracked in `cost_usd` column (null OK if provider omits it)
 
 ### Phase 3 final commit + merge
 
