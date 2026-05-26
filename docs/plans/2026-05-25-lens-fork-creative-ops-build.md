@@ -1811,7 +1811,11 @@ git branch -d feat/create-stage
 
 **Not a code phase.** Operations + cleanup.
 
+**Status 2026-05-26:** DONE. Executed before Phase 3 by decision after Phase 2.5 hardening shipped. dose-creative is paused, not deleted; Supabase `creative.*` is archived in the vault.
+
 ### Task 4.1: Pre-shutdown audit
+
+**Result:** 14 `creative.*` tables exported. Data-side audit found 1 stale pending campaign and 10 draft rings; all were archived before pause.
 
 **Steps:**
 
@@ -1821,6 +1825,8 @@ git branch -d feat/create-stage
 4. If found: export to JSON manually + save to vault at `techstack/dose-creative-archive-2026-05-25/`
 
 ### Task 4.2: Archive Supabase creative schema
+
+**Result:** JSON exports and `creative-schema-openapi.json` saved to `/Users/nico/Library/Mobile Documents/iCloud~md~obsidian/Documents/dose-playbook/techstack/dose-creative-archive-2026-05-25/`.
 
 **Steps:**
 
@@ -1832,6 +1838,8 @@ git branch -d feat/create-stage
 
 ### Task 4.3: Pause Vercel deployment
 
+**Result:** Vercel project `dose-creative` (`prj_L2ZYG3PUeOkEU1G5xDsAWyHIo2Cc`) paused via API. `https://dose-creative.vercel.app` returns `503` with `x-vercel-error: DEPLOYMENT_PAUSED`.
+
 **Steps:**
 
 1. Vercel dashboard → dose-creative project → Settings → General
@@ -1840,6 +1848,8 @@ git branch -d feat/create-stage
 4. Verify dose-creative.vercel.app returns paused/error page
 
 ### Task 4.4: Clean CLAUDE.md references
+
+**Result:** CLAUDE.md routes creative ops / Meta creative analysis to the local Lens fork.
 
 **Files:**
 - Modify: `/Users/nico/Library/Mobile Documents/iCloud~md~obsidian/Documents/dose-playbook/CLAUDE.md`
@@ -1852,12 +1862,16 @@ Steps:
 
 ### Task 4.5: Close lingering reminders
 
+**Result:** Added weekly Lens fork use reminder for 2026-06-02.
+
 **Files:**
 - Modify: `/Users/nico/Library/Mobile Documents/iCloud~md~obsidian/Documents/dose-playbook/ops/reminders.md`
 
 Remove any dose-creative-specific reminders. Add one new reminder: "Lens fork weekly use — capture gaps in inbox/."
 
 ### Task 4.6: Update MOC
+
+**Result:** Created `dose-playbook/maps/Creative ops MOC.md`.
 
 **Files:**
 - Modify: `dose-playbook/maps/Creative ops MOC.md` (if exists, otherwise create)
@@ -1869,11 +1883,11 @@ Add Lens fork as canonical creative ops entry point. Link to:
 
 ### Phase 4 exit criteria
 
-- [ ] dose-creative.vercel.app shows paused state
-- [ ] Supabase creative.* schema archived to vault
-- [ ] CLAUDE.md routing table has no dose-creative references
-- [ ] No remaining ops reminders point to dose-creative
-- [ ] MOC reflects Lens fork as canonical entry point
+- [x] dose-creative.vercel.app shows paused state
+- [x] Supabase creative.* schema archived to vault
+- [x] CLAUDE.md routing table has no active dose-creative routing
+- [x] No remaining ops reminders point to dose-creative
+- [x] MOC reflects Lens fork as canonical entry point
 
 ### Phase 4 commit (vault changes)
 
