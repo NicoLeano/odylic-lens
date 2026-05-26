@@ -68,6 +68,33 @@ def _insert_recipe(store_module, brand: str = "DOSE OF", recipe: dict | None = N
     return store_module.insert_proposed_drafts(brand, [recipe or RECIPE])[0]
 
 
+def test_video_model_resolver_rejects_sentence_hint():
+    import fal_generation
+    from create_endpoints import _video_model_for
+
+    recipe = {"fal_model_hint": "veo-3 o kling-pro para movimiento natural"}
+
+    assert _video_model_for(recipe, override=None) == fal_generation.DEFAULT_VIDEO_MODEL
+
+
+def test_video_model_resolver_allows_only_known_tokens():
+    import fal_generation
+    from create_endpoints import _video_model_for
+
+    assert (
+        _video_model_for({"fal_model_hint": "kling"}, None)
+        == fal_generation.DEFAULT_VIDEO_MODEL
+    )
+    assert (
+        _video_model_for({"fal_model_hint": "fal-ai/kling-video/v1.6/standard"}, None)
+        == fal_generation.DEFAULT_VIDEO_MODEL
+    )
+    assert (
+        _video_model_for({"fal_model_hint": "hunyuan cinematic motion"}, None)
+        == fal_generation.DEFAULT_VIDEO_MODEL
+    )
+
+
 def test_create_routes_require_authenticated_session(unauthenticated_client):
     response = unauthenticated_client.get("/api/drafts?brand=DOSE+OF")
     assert response.status_code == 401
@@ -203,6 +230,47 @@ def test_generate_video_records_assets_without_holding_store_lock(
     assert draft["assets"][0]["mime_type"] == "video/mp4"
     assert draft["assets"][0]["cost_usd"] == 0.31
     assert draft["assets"][0]["fal_model_used"] == "fal-ai/kling-video/v1.6/standard"
+
+
+def test_generate_video_sentence_hint_uses_default_model(client, isolated_store):
+    import fal_generation
+
+    _insert_recipe(
+        isolated_store,
+        recipe={
+            **RECIPE,
+            "recipe_id": "recipe-sentence-hint",
+            "draft_id": "draft-sentence-hint",
+            "fal_model_hint": "veo-3 o kling-pro para movimiento natural",
+        },
+    )
+    seen: dict[str, str] = {}
+
+    def fake_generate_video(*, prompt, output_dir, model_id, arguments, variant_count):
+        seen["model_id"] = model_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "result.mp4"
+        path.write_bytes(b"video")
+        return [
+            {
+                "path": str(path),
+                "mime_type": "video/mp4",
+                "fal_model_used": model_id,
+                "cost_usd": 0.31,
+            }
+        ]
+
+    with patch(
+        "create_endpoints.fal_generation.generate_video", side_effect=fake_generate_video
+    ):
+        response = client.post("/api/drafts/draft-sentence-hint/generate-video", json={})
+
+    assert response.status_code == 200
+    assert seen["model_id"] == fal_generation.DEFAULT_VIDEO_MODEL
+    assert (
+        response.json()["draft"]["assets"][0]["fal_model_used"]
+        == fal_generation.DEFAULT_VIDEO_MODEL
+    )
 
 
 def test_patch_discarded_hides_draft_from_default_list(client, isolated_store):

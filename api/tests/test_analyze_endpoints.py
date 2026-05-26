@@ -700,6 +700,8 @@ def test_build_prompt_includes_brand_winners_and_count():
     # JSON shape hint surfaces (so model returns parseable structure)
     assert "recipes" in prompt
     assert "angle" in prompt
+    assert '"fal_model_hint": "default|kling"' in prompt
+    assert "one short token only" in prompt
 
 
 def test_build_prompt_compacts_large_profile_and_omits_media_urls():

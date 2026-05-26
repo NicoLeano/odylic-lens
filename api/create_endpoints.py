@@ -36,6 +36,14 @@ _UPLOAD_EXT_BY_MIME = {
     "video/quicktime": ".mov",
 }
 _GENERIC_UPLOAD_MIMES = {"", "application/octet-stream", "binary/octet-stream"}
+_KNOWN_FAL_VIDEO_MODELS = {
+    "default": fal_generation.DEFAULT_VIDEO_MODEL,
+    "kling": fal_generation.DEFAULT_VIDEO_MODEL,
+    "kling-video": fal_generation.DEFAULT_VIDEO_MODEL,
+    "kling-standard": fal_generation.DEFAULT_VIDEO_MODEL,
+    "kling-video/v1.6/standard": fal_generation.DEFAULT_VIDEO_MODEL,
+    fal_generation.DEFAULT_VIDEO_MODEL: fal_generation.DEFAULT_VIDEO_MODEL,
+}
 
 
 class GenerateVideoRequest(BaseModel):
@@ -127,15 +135,21 @@ def _video_prompt(draft: dict) -> str:
 
 
 def _video_model_for(recipe: dict, override: Optional[str]) -> str:
-    if override:
-        return override.strip()
-    hint = str(recipe.get("fal_model_hint") or "").strip()
-    lowered = hint.lower()
-    if lowered.startswith("fal-ai/"):
-        return hint
-    if lowered.startswith(("kling", "veo", "hunyuan")):
-        return f"fal-ai/{hint}"
+    model = _known_video_model(override)
+    if model:
+        return model
+    model = _known_video_model(recipe.get("fal_model_hint"))
+    if model:
+        return model
     return fal_generation.DEFAULT_VIDEO_MODEL
+
+
+def _known_video_model(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    token = raw.split(maxsplit=1)[0].strip("'\"`.,;:()[]{}<>").lower()
+    return _KNOWN_FAL_VIDEO_MODELS.get(token)
 
 
 def _load_draft_or_404(draft_id: str) -> dict:
