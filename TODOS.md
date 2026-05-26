@@ -50,6 +50,36 @@
 
 ---
 
+## TODO-004: claude_client._parse_json_loose uses greedy regex
+
+**What:** Replace `_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)` greedy match in `api/claude_client.py` with a brace-depth scanner that returns the FIRST balanced `{...}` block.
+
+**Why:** Greedy match spans from the first `{` to the LAST `}` in the buffer. Realistic Claude CLI output where the model emits an example before the answer (`Example: {"a": 1} actual: {"angle": "Benefits"}`) gets parsed as the concatenated middle — `JSONDecodeError` propagates raw instead of the documented `ValueError`. Worse, if wrap text is itself bracket-balanced, silently parses the wrong object.
+
+**Context:**
+- Found in code review of commit `8a5b7c4` (feat/analyze-stage branch). All 12 current tests pass because they happen to use single `{...}` pair stdouts.
+- Suggested fix is a brace-depth scanner (~10 lines, no regex). Implementer report included sample code.
+- Add regression test: `'Example: {"a": 1} actual: {"angle": "Benefits"}'` must return `{"angle": "Benefits"}`.
+
+**Depends on / blocked by:** Should land BEFORE Analyze stage goes live against real Claude CLI output (Task 2.11 router registration).
+
+---
+
+## TODO-005: claude_client subprocess timeout / empty / mime polish
+
+**What:** Three small hardening items in `api/claude_client.py`:
+1. Catch `subprocess.TimeoutExpired` and re-raise as `RuntimeError("claude CLI timed out after Ns")` for consistency with the "all subprocess failures = RuntimeError" contract.
+2. Guard against `result.returncode == 0` AND empty stdout — raise `RuntimeError("claude CLI returned empty stdout")` rather than the confusing downstream ValueError.
+3. Replace `_MIME_BY_EXT.get(..., "image/png")` silent default with `raise ValueError(f"unsupported frame extension {ext}")` so .webp / .gif / unknown frames fail fast instead of getting a 400 from Anthropic SDK.
+
+**Why:** Each is a one-liner correctness/UX improvement. None are spec-blocking — the 12 current tests all pass. But they shore up edge cases the Analyze stage will hit in real use.
+
+**Context:** Code review notes NTH-1, NTH-2, NTH-3 from the Task 2.4-2.5 review.
+
+**Depends on / blocked by:** None. Can land alongside TODO-004 fix or separately.
+
+---
+
 ## TODO-003: Cost dashboard (per-stage spend visibility)
 
 **What:** Add a Settings → Costs panel that surfaces month-to-date spend per stage: Anthropic API (audit tagging via Haiku), Claude Code subscription session usage (Analyze stage, $0 marginal but useful for cap visibility), fal.ai per-generation cost (Create stage). Pull from each vendor's API where possible, fall back to local SQLite log otherwise.
