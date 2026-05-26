@@ -4,6 +4,36 @@
 
 ---
 
+## TODO-009: Defensive fal.ai model resolver — drop the prefix-match footgun
+
+**What:** Tighten `_video_model_for(recipe, override)` in `api/create_endpoints.py:129-138`. Current branch
+`if lowered.startswith(("kling", "veo", "hunyuan")): return f"fal-ai/{hint}"` matches Claude's free-form
+descriptive hints (e.g. `"veo-3 o kling-pro para movimiento natural"`) and prepends `fal-ai/` to the WHOLE
+sentence, sending fal a model ID it can't resolve → `Application '...' not found` 500.
+
+**Why:** Caught on first real DOSE OF smoke 2026-05-26. Recipe `recipe_id=...RITUAL NOCTURNO ANTI-PASTILLAS...`
+had `fal_model_hint="veo-3 o kling-pro para movimiento natural"`; the resolver returned
+`fal-ai/veo-3 o kling-pro para movimiento natural` which fal rejected. Every other Phase 3 hop worked end-to-end:
+auth → fetch winners → Claude recipes → drafts persisted with draft_id → Create tab renders → Copy prompt button →
+Generate Video click → backend resolver. Only the resolver-to-fal handoff failed.
+
+**Suggested fix (any of, in order of cheapness):**
+1. **Token extraction + whitelist (cheapest, ~10 LOC):** In `_video_model_for`, split the hint on whitespace,
+   take the first token, validate against a `_KNOWN_FAL_VIDEO_MODELS` dict that maps short names
+   (`"kling-pro" → "fal-ai/kling-video/v1.6/pro/text-to-video"`, `"veo-3" → "fal-ai/veo-3/standard"`, etc.).
+   Fall back to `DEFAULT_VIDEO_MODEL` if the first token doesn't match.
+2. **System prompt tightening:** In `api/analyze_endpoints.py:_SYSTEM_PROMPT` (or the user prompt builder),
+   constrain Claude to return ONE valid model slug from a small list. Cuts the bug at the source.
+3. **UI model picker:** Add a dropdown to CreateView with the whitelisted models, default to the recipe hint
+   if it matches one, override otherwise. Belt-and-braces on top of #1 + #2.
+
+**Regression test (must land with the fix):** `_video_model_for(recipe={"fal_model_hint": "veo-3 o kling-pro para movimiento natural"}, override=None)` returns `DEFAULT_VIDEO_MODEL`, NOT the malformed string. Bonus:
+exercise the route end-to-end with a recipe whose hint is a sentence — assert fal_generation gets the default model, no upstream 500.
+
+**Depends on / blocked by:** Nothing — pure local refactor. Patches Phase 3 surface that's already shipped to main. Land before next fal.ai smoke attempt.
+
+---
+
 ## TODO-001: Layer 2 video model (Gemini 2.5 Pro / Qwen3-VL-235B opt-in toggle)
 
 **What:** Add an opt-in "Deep video analysis" toggle on individual recipes in the Analyze tab. Toggle picks Gemini 2.5 Pro or Qwen3-VL-235B (via Together AI) and routes the video through native video-understanding instead of Layer 1's ffmpeg-frame approach.
