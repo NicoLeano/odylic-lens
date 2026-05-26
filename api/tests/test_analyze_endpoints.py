@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -168,6 +169,134 @@ def test_analyze_writes_proposed_drafts(client):
     assert len(saved_recipes) == 1
 
 
+def test_save_proposed_drafts_inserts_proposed_rows(tmp_path, monkeypatch):
+    """Task 2.10: Analyze recipes persist to the real drafts table."""
+    db_path = tmp_path / "lens.db"
+    monkeypatch.setenv("LENS_DB_PATH", str(db_path))
+
+    import store
+    from analyze_endpoints import _save_proposed_drafts
+
+    store.init_db()
+    _save_proposed_drafts("DOSE OF", [_FAKE_RECIPE_RESPONSE["recipes"][0]])
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT brand, status, recipe_json, source_winner_ids FROM drafts WHERE recipe_id = ?",
+        ("r1",),
+    ).fetchone()
+    assets_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'draft_assets'"
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["brand"] == "DOSE OF"
+    assert row["status"] == "proposed"
+    assert json.loads(row["recipe_json"])["angle"] == "Benefits"
+    assert json.loads(row["source_winner_ids"]) == ["120211111111111111"]
+    assert assets_table is not None
+
+
+def test_insert_proposed_drafts_rolls_back_on_bad_recipe(tmp_path, monkeypatch):
+    """14A: malformed recipe batch leaves no partially inserted rows."""
+    db_path = tmp_path / "lens.db"
+    monkeypatch.setenv("LENS_DB_PATH", str(db_path))
+
+    import store
+
+    store.init_db()
+    with pytest.raises(ValueError):
+        store.insert_proposed_drafts(
+            "DOSE OF", [_FAKE_RECIPE_RESPONSE["recipes"][0], "not-a-recipe"]
+        )
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_fetch_top_winners_uses_real_creatives_filters_scope_and_product():
+    """Task 2.10: winners come from Creative Analysis, active sales ads only."""
+    from analyze_endpoints import _fetch_top_winners
+
+    ads = [
+        {
+            "ad_id": "winner",
+            "ad_name": "Calm cacao main",
+            "campaign_name": "Sales | Prospecting",
+            "objective": "OUTCOME_SALES",
+            "effective_status": "ACTIVE",
+            "spend": 1000,
+            "roas": 4,
+            "purchases": 20,
+            "cost_per_purchase": 50,
+            "body": "Calm Cacao ritual",
+        },
+        {
+            "ad_id": "traffic",
+            "ad_name": "Calm traffic",
+            "campaign_name": "Traffic | followers | TOF",
+            "objective": "OUTCOME_TRAFFIC",
+            "effective_status": "ACTIVE",
+            "spend": 9000,
+            "roas": 9,
+            "purchases": 90,
+            "cost_per_purchase": 10,
+            "body": "Calm Cacao",
+        },
+        {
+            "ad_id": "paused",
+            "ad_name": "Calm paused",
+            "campaign_name": "Sales | Prospecting",
+            "objective": "OUTCOME_SALES",
+            "effective_status": "PAUSED",
+            "spend": 8000,
+            "roas": 8,
+            "purchases": 80,
+            "cost_per_purchase": 10,
+            "body": "Calm Cacao",
+        },
+        {
+            "ad_id": "other-product",
+            "ad_name": "Coffee main",
+            "campaign_name": "Sales | Prospecting",
+            "objective": "OUTCOME_SALES",
+            "effective_status": "ACTIVE",
+            "spend": 7000,
+            "roas": 7,
+            "purchases": 70,
+            "cost_per_purchase": 10,
+            "body": "Mushroom Coffee",
+        },
+        {
+            "ad_id": "second",
+            "ad_name": "Calm cacao backup",
+            "campaign_name": "Sales | Prospecting",
+            "objective": "CONVERSIONS",
+            "effective_status": "ACTIVE",
+            "spend": 500,
+            "roas": 2,
+            "purchases": 10,
+            "cost_per_purchase": 50,
+            "body": "Calm Cacao",
+            "video_source_url": "https://cdn.example/ad.mp4",
+        },
+    ]
+
+    with patch(
+        "analyze_endpoints._list_creatives_impl", return_value={"ads": ads}
+    ) as mock_list:
+        winners = _fetch_top_winners("DOSE OF", top_n=2, focus_product="Calm")
+
+    assert [w["ad_id"] for w in winners] == ["winner", "second"]
+    assert winners[1]["creative_type"] == "video"
+    assert winners[1]["video_url"] == "https://cdn.example/ad.mp4"
+    assert mock_list.call_args.kwargs["brand"] == "DOSE OF"
+
+
 # ---------------------------------------------------------------------------
 # Cache behavior (decision 4A)
 # ---------------------------------------------------------------------------
@@ -253,7 +382,7 @@ def test_analyze_passes_video_frames_to_claude(client):
         "analyze_endpoints.brand_profile_store.get_profile",
         return_value=_FAKE_BRAND_PROFILE,
     ), patch(
-        "analyze_endpoints.extract_frames", return_value=fake_frames
+        "analyze_endpoints.extract_frames_concurrent", return_value=[fake_frames]
     ) as mock_ex, patch(
         "analyze_endpoints.claude_client.call", return_value={"recipes": []}
     ) as mock_call, patch(
@@ -281,7 +410,7 @@ def test_analyze_skips_frames_when_flag_disabled(client):
         "analyze_endpoints.brand_profile_store.get_profile",
         return_value=_FAKE_BRAND_PROFILE,
     ), patch(
-        "analyze_endpoints.extract_frames"
+        "analyze_endpoints.extract_frames_concurrent"
     ) as mock_ex, patch(
         "analyze_endpoints.claude_client.call", return_value={"recipes": []}
     ), patch(

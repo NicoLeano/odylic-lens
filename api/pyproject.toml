@@ -62,11 +62,18 @@ pythonpath = ["."]
 [tool.setuptools]
 py-modules = [
     "main",
+    "ads_reports_endpoints",
+    "analyze_endpoints",
+    "atria_endpoints",
     "auth",
+    "boards_endpoints",
+    "brand_profile_store",
     "store",
     "meta_client",
     "ad_analysis_endpoints",
+    "claude_client",
     "creative_warehouse",
+    "frame_extractor",
     "lens_context",
     "lens_routes",
     "security",

@@ -17,6 +17,7 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -217,6 +218,34 @@ def init_db() -> None:
                 updated_at   INTEGER NOT NULL,
                 PRIMARY KEY (brand, section)
             );
+            CREATE TABLE IF NOT EXISTS drafts (
+                draft_id     TEXT PRIMARY KEY,
+                recipe_id    TEXT NOT NULL,
+                brand        TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed', 'ready', 'draft', 'launched', 'discarded')),
+                recipe_json  TEXT NOT NULL,
+                source_winner_ids TEXT NOT NULL DEFAULT '[]',
+                meta_ad_id   TEXT,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_drafts_recipe_id ON drafts (recipe_id);
+            CREATE INDEX IF NOT EXISTS idx_drafts_brand_status_created
+                ON drafts (brand, status, created_at DESC);
+            CREATE TABLE IF NOT EXISTS draft_assets (
+                asset_id       TEXT PRIMARY KEY,
+                draft_id       TEXT NOT NULL,
+                variant_idx    INTEGER NOT NULL,
+                path           TEXT NOT NULL,
+                mime_type      TEXT NOT NULL,
+                fal_model_used TEXT,
+                cost_usd       REAL,
+                created_at     INTEGER NOT NULL,
+                FOREIGN KEY (draft_id) REFERENCES drafts(draft_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_draft_assets_draft_id
+                ON draft_assets (draft_id, variant_idx);
         """)
 
 
@@ -550,3 +579,64 @@ def list_brand_sections(brand: str) -> dict[str, dict]:
         except Exception:
             out[row["section"]] = {}
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Analyze/Create drafts
+# ─────────────────────────────────────────────────────────────────────
+
+
+def insert_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
+    """Insert Analyze recipes as `proposed` drafts in one transaction.
+
+    Returns the draft ids written. If any recipe is malformed, no rows are
+    committed; the Analyze route should fail loudly instead of showing
+    concepts that were not persisted.
+    """
+    if not brand:
+        raise ValueError("brand is required")
+    if not isinstance(recipes, list):
+        raise ValueError("recipes must be a list")
+
+    now = int(time.time())
+    rows: list[tuple[str, str, str, str, str, int, int]] = []
+    for recipe in recipes:
+        if not isinstance(recipe, dict):
+            raise ValueError("each recipe must be a dict")
+        recipe_id = str(recipe.get("recipe_id") or uuid.uuid4())
+        recipe_payload = {**recipe, "recipe_id": recipe_id}
+        source_winner_ids = recipe_payload.get("source_winner_ids") or []
+        if not isinstance(source_winner_ids, list):
+            source_winner_ids = [str(source_winner_ids)]
+        rows.append(
+            (
+                recipe_id,
+                recipe_id,
+                brand,
+                json.dumps(recipe_payload, ensure_ascii=False, sort_keys=True),
+                json.dumps(source_winner_ids, ensure_ascii=False),
+                now,
+                now,
+            )
+        )
+
+    written: list[str] = []
+    with _LOCK, _connect() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO drafts "
+                    "(draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?) "
+                    "ON CONFLICT(draft_id) DO UPDATE SET "
+                    "brand=excluded.brand, status='proposed', recipe_json=excluded.recipe_json, "
+                    "source_winner_ids=excluded.source_winner_ids, updated_at=excluded.updated_at",
+                    row,
+                )
+                written.append(row[0])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return written
