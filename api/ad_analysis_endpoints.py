@@ -1896,12 +1896,12 @@ def _parse_perf(r: dict) -> dict:
         return total
 
     spend = float(r.get("spend", 0) or 0)
-    purchases = int(act("purchase") or act("offsite_conversion.fb_pixel_purchase"))
-    revenue = aval("purchase") or aval("offsite_conversion.fb_pixel_purchase")
+    purchases = int(act("purchase"))
+    revenue = aval("purchase")
     clicks = int(r.get("clicks", 0) or 0)
     impressions = int(r.get("impressions", 0) or 0)
     link_clicks = int(act("link_click"))
-    add_to_cart = int(act("add_to_cart") or act("offsite_conversion.fb_pixel_add_to_cart"))
+    add_to_cart = int(act("add_to_cart"))
 
     # Video engagement. needed for hook/hold/completion rate calculations in
     # the frontend's custom metrics.
@@ -1932,13 +1932,11 @@ def _parse_perf(r: dict) -> dict:
         except Exception:
             unique_outbound_clicks = 0
     landing_page_views = int(act("landing_page_view"))
-    add_to_cart_value = aval("add_to_cart") or aval("offsite_conversion.fb_pixel_add_to_cart")
+    add_to_cart_value = aval("add_to_cart")
     leads = int(
         act("lead") or act("onsite_web_lead") or act("offsite_conversion.fb_pixel_lead")
     )
-    initiate_checkout = int(
-        act("initiate_checkout") or act("offsite_conversion.fb_pixel_initiate_checkout")
-    )
+    initiate_checkout = int(act("initiate_checkout"))
     post_reactions = int(
         act("post_reaction") or act("like") or act("post_like")
     )
@@ -2814,14 +2812,14 @@ _DEMO_CACHE_TTL = 3600  # 1h. demos don't drift fast within a day
 
 
 def _purchase_count(actions: list[dict]) -> int:
-    """Sum offsite_conversion.fb_pixel_purchase action counts."""
+    """Return canonical purchase count from Meta action rows."""
     if not isinstance(actions, list):
         return 0
     total = 0
     for a in actions:
         if not isinstance(a, dict):
             continue
-        if a.get("action_type") == "offsite_conversion.fb_pixel_purchase":
+        if a.get("action_type") == "purchase":
             try:
                 total += int(float(a.get("value") or 0))
             except (ValueError, TypeError):
@@ -2836,7 +2834,7 @@ def _purchase_value(action_values: list[dict]) -> float:
     for a in action_values:
         if not isinstance(a, dict):
             continue
-        if a.get("action_type") == "offsite_conversion.fb_pixel_purchase":
+        if a.get("action_type") == "purchase":
             try:
                 total += float(a.get("value") or 0)
             except (ValueError, TypeError):
