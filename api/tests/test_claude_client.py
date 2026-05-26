@@ -78,6 +78,29 @@ def test_call_subprocess_raises_runtime_error_on_other_nonzero():
     assert not isinstance(exc.value, claude_client.ClaudeAuthExpired)
 
 
+def test_call_subprocess_nonzero_uses_stdout_when_stderr_empty():
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(
+            stdout='{"type":"result","is_error":true,"result":"permission denied"}',
+            stderr="",
+            returncode=1,
+        )
+        with pytest.raises(RuntimeError) as exc:
+            claude_client.call(strategy="subprocess", prompt="p")
+    assert "permission denied" in str(exc.value)
+
+
+def test_call_subprocess_nonzero_detects_auth_in_stdout():
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(
+            stdout='{"type":"result","is_error":true,"result":"401 auth expired"}',
+            stderr="",
+            returncode=1,
+        )
+        with pytest.raises(claude_client.ClaudeAuthExpired):
+            claude_client.call(strategy="subprocess", prompt="p")
+
+
 def test_call_subprocess_strips_wrap_text_around_json():
     with patch("claude_client.subprocess.run") as run:
         run.return_value = _completed(
@@ -85,6 +108,32 @@ def test_call_subprocess_strips_wrap_text_around_json():
         )
         out = claude_client.call(strategy="subprocess", prompt="p")
     assert out == {"angle": "Benefits"}
+
+
+def test_call_subprocess_unwraps_claude_cli_result_json():
+    """Claude Code --output-format=json wraps model text under `result`."""
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(
+            stdout=(
+                '{"type":"result","subtype":"success","is_error":false,'
+                '"result":"{\\"recipes\\":[{\\"recipe_id\\":\\"r1\\"}]}"}'
+            )
+        )
+        out = claude_client.call(strategy="subprocess", prompt="p")
+    assert out == {"recipes": [{"recipe_id": "r1"}]}
+
+
+def test_call_subprocess_error_result_wrapper_raises_runtime_error():
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(
+            stdout=(
+                '{"type":"result","subtype":"error","is_error":true,'
+                '"result":"model refused"}'
+            )
+        )
+        with pytest.raises(RuntimeError) as exc:
+            claude_client.call(strategy="subprocess", prompt="p")
+    assert "model refused" in str(exc.value)
 
 
 def test_call_subprocess_raises_value_error_when_no_json_block():
@@ -101,6 +150,13 @@ def test_call_subprocess_concatenates_system_and_prompt():
     args = run.call_args[0][0]
     p_idx = args.index("-p")
     assert args[p_idx + 1] == "rules\n\ntask"
+
+
+def test_call_subprocess_runs_outside_repo_context():
+    with patch("claude_client.subprocess.run") as run:
+        run.return_value = _completed(stdout='{"ok": 1}')
+        claude_client.call(strategy="subprocess", prompt="task")
+    assert run.call_args.kwargs["cwd"].endswith("odylic-lens-claude")
 
 
 # ---------------------------------------------------------------------------

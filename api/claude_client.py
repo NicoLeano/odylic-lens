@@ -29,6 +29,8 @@ _MIME_BY_EXT = {
 
 _AUTH_PATTERNS = (re.compile(r"auth", re.I), re.compile(r"expired", re.I), re.compile(r"401", re.I))
 
+_SUBPROCESS_CWD = Path("/tmp/odylic-lens-claude")
+
 
 class ClaudeAuthExpired(RuntimeError):
     """Subprocess Claude CLI returned an auth / 401 / expired error."""
@@ -160,20 +162,40 @@ def _call_subprocess(
     for f in frames or []:
         args.extend(["--image", f])
 
+    _SUBPROCESS_CWD.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(_SUBPROCESS_CWD),
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude CLI timed out after {timeout}s")
     if result.returncode != 0:
         stderr = result.stderr or ""
-        if _is_auth_error(stderr):
-            raise ClaudeAuthExpired(stderr.strip() or "Claude auth expired")
-        raise RuntimeError(f"claude CLI exit {result.returncode}: {stderr.strip()}")
+        stdout = result.stdout or ""
+        diagnostic = stderr.strip() or stdout.strip()
+        if _is_auth_error(f"{stderr}\n{stdout}"):
+            raise ClaudeAuthExpired(diagnostic or "Claude auth expired")
+        raise RuntimeError(
+            f"claude CLI exit {result.returncode}: {diagnostic[:500]}"
+        )
     if not (result.stdout or "").strip():
         raise RuntimeError("claude CLI returned empty stdout")
-    return _parse_json_loose(result.stdout)
+    parsed = _parse_json_loose(result.stdout)
+    if (
+        isinstance(parsed, dict)
+        and parsed.get("type") == "result"
+        and isinstance(parsed.get("result"), str)
+    ):
+        if parsed.get("is_error"):
+            raise RuntimeError(
+                f"claude CLI returned error result: {parsed.get('result', '').strip()}"
+            )
+        return _parse_json_loose(parsed["result"])
+    return parsed
 
 
 def call(
