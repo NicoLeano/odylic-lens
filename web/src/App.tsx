@@ -6,8 +6,9 @@
 
 import { useEffect, useState, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Loader2, Sparkles, Settings as SettingsIcon, KeyRound, LogOut } from 'lucide-react'
+import { Loader2, Sparkles, Wand2, Settings as SettingsIcon, KeyRound, LogOut } from 'lucide-react'
 import { AdAnalysisView, preloadAds } from './components/AdAnalysisView'
+import { AnalyzeView } from './components/AnalyzeView'
 import { BrandSelector } from './components/BrandSelector'
 import { DatePicker } from './components/DatePicker'
 import Landing from './pages/Landing'
@@ -46,12 +47,12 @@ function defaultDateRange(): { start: string; end: string } {
   return { start: fmt(start), end: fmt(yesterday) }
 }
 
-type Tab = 'creatives' | 'brand' | 'settings'
+type Tab = 'creatives' | 'analyze' | 'brand' | 'settings'
 
 function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const q = new URLSearchParams(window.location.search).get('tab')
-    if (q === 'brand' || q === 'settings') return q
+    if (q === 'analyze' || q === 'brand' || q === 'settings') return q
     return 'creatives'
   })
   const [brands, setBrands] = useState<Brand[]>([])
@@ -116,6 +117,7 @@ function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
         <div className="w-8 h-px bg-black/[0.08] my-1" />
         {([
           { k: 'creatives' as const, icon: Sparkles, title: 'Creative Analysis' },
+          { k: 'analyze' as const, icon: Wand2, title: 'Recipe Analyze' },
           { k: 'brand' as const, icon: SettingsIcon, title: 'Brand Settings' },
           { k: 'settings' as const, icon: KeyRound, title: 'API Settings' },
         ]).map(({ k, icon: Icon, title }) => (
@@ -225,6 +227,9 @@ function Shell({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
                 compareStart={compareStart}
                 compareEnd={compareEnd}
               />
+            )}
+            {activeTab === 'analyze' && (
+              <AnalyzeView brand={primaryBrand} />
             )}
             {activeTab === 'brand' && (
               (brandSettingsTarget || primaryBrand) ? (
