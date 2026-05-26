@@ -67,7 +67,7 @@ Regression tests in `tests/test_claude_client.py`. 17/17 pass.
 
 ---
 
-## TODO-006: Phase 3.5 — make multi-variant fal.ai generation non-blocking
+## ~~TODO-006: Phase 3.5 — make multi-variant fal.ai generation non-blocking~~ RESOLVED 2026-05-26
 
 **What:** Replace the sequential `variant_count` loop in `fal_generation.generate_video()` with bounded parallelism or the fal.ai submit/poll API.
 
@@ -79,9 +79,11 @@ Regression tests in `tests/test_claude_client.py`. 17/17 pass.
 - Existing single-variant behavior and response shape stay compatible.
 - Regression coverage pins the no-DB-lock behavior during generation.
 
+Resolved with bounded `ThreadPoolExecutor` in `fal_generation.generate_video()`, preserving variant ordering and single-variant behavior. Regression coverage: `test_generate_video_runs_multi_variant_requests_concurrently` plus the existing Create route no-lock test.
+
 ---
 
-## TODO-007: Phase 3.5 — sniff upload media bytes before storing draft assets
+## ~~TODO-007: Phase 3.5 — sniff upload media bytes before storing draft assets~~ RESOLVED 2026-05-26
 
 **What:** Validate uploaded image/video bytes instead of trusting the multipart content type or filename extension.
 
@@ -93,9 +95,11 @@ Regression tests in `tests/test_claude_client.py`. 17/17 pass.
 - Return a clear HTTP 400 for unsupported media.
 - Add route tests for spoofed content type and valid image/video upload.
 
+Resolved with allowlisted magic-byte sniffing for JPEG, PNG, GIF, WEBP, MP4/MOV, and WEBM. Route now rejects spoofed and mismatched content types before writing assets. Regression coverage: spoofed content-type and mismatched content-type upload tests.
+
 ---
 
-## TODO-008: Phase 3.5 — clean orphan files on multi-variant fal.ai failure
+## ~~TODO-008: Phase 3.5 — clean orphan files on multi-variant fal.ai failure~~ RESOLVED 2026-05-26
 
 **What:** Remove files downloaded during a failed multi-variant fal.ai request before returning an error.
 
@@ -106,6 +110,8 @@ Regression tests in `tests/test_claude_client.py`. 17/17 pass.
 - Existing successful draft assets are not deleted.
 - Add test coverage for a mid-loop failure leaving no new files behind.
 - Keep existing transactional DB insert behavior unchanged.
+
+Resolved in `fal_generation.generate_video()` by cleaning files created by the failed request before re-raising. SQLite transaction behavior remains unchanged because asset row insertion still happens only after generation returns successfully. Regression coverage: mid-variant download failure leaves no new files.
 
 ---
 

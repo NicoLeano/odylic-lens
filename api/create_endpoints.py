@@ -35,6 +35,7 @@ _UPLOAD_EXT_BY_MIME = {
     "video/webm": ".webm",
     "video/quicktime": ".mov",
 }
+_GENERIC_UPLOAD_MIMES = {"", "application/octet-stream", "binary/octet-stream"}
 
 
 class GenerateVideoRequest(BaseModel):
@@ -149,16 +150,41 @@ def _ensure_mutable(draft: dict) -> None:
         raise HTTPException(400, "Discarded drafts cannot be modified.")
 
 
-def _upload_mime(file: UploadFile) -> tuple[str, str]:
-    mime = (file.content_type or "").split(";", 1)[0].strip().lower()
-    ext = _UPLOAD_EXT_BY_MIME.get(mime)
-    if ext:
-        return mime, ext
-    suffix = Path(file.filename or "").suffix.lower()
-    for known_mime, known_ext in _UPLOAD_EXT_BY_MIME.items():
-        if suffix == known_ext:
-            return known_mime, known_ext
-    raise HTTPException(400, "Unsupported upload type. Use image or video files.")
+def _declared_upload_mime(file: UploadFile) -> str:
+    return (file.content_type or "").split(";", 1)[0].strip().lower()
+
+
+def _sniff_upload_mime(data: bytes) -> Optional[str]:
+    """Return an allowlisted media type based on magic bytes."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12].lower()
+        if brand == b"qt  ":
+            return "video/quicktime"
+        return "video/mp4"
+    return None
+
+
+def _validated_upload_mime(file: UploadFile, first_chunk: bytes) -> tuple[str, str]:
+    sniffed = _sniff_upload_mime(first_chunk)
+    if not sniffed:
+        raise HTTPException(400, "Unsupported upload type. Use image or video files.")
+    declared = _declared_upload_mime(file)
+    if declared not in _GENERIC_UPLOAD_MIMES and declared != sniffed:
+        raise HTTPException(
+            400,
+            f"Upload content type {declared} does not match detected {sniffed}.",
+        )
+    return sniffed, _UPLOAD_EXT_BY_MIME[sniffed]
 
 
 def _remove_file(path: str) -> None:
@@ -245,14 +271,20 @@ async def upload_draft_asset(
 ) -> dict:
     draft = _load_draft_or_404(draft_id)
     _ensure_mutable(draft)
-    mime_type, ext = _upload_mime(file)
+    first_chunk = await file.read(1024 * 1024)
+    if not first_chunk:
+        raise HTTPException(400, "Upload is empty.")
+    mime_type, ext = _validated_upload_mime(file, first_chunk)
     dest_dir = _draft_dir(draft)
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / f"manual-{int(time.time())}-{uuid.uuid4().hex[:8]}{ext}"
 
-    written = 0
+    written = len(first_chunk)
     try:
         with open(path, "wb") as out:
+            if written > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "Upload is too large.")
+            out.write(first_chunk)
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
@@ -261,8 +293,6 @@ async def upload_draft_asset(
                 if written > MAX_UPLOAD_BYTES:
                     raise HTTPException(413, "Upload is too large.")
                 out.write(chunk)
-        if written == 0:
-            raise HTTPException(400, "Upload is empty.")
         store.insert_draft_assets(
             draft_id,
             [
