@@ -9,11 +9,11 @@ Covers Task 2.8 of the fork plan, with decisions:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
+import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +31,20 @@ def _clear_cache():
 @pytest.fixture
 def client():
     """FastAPI test client with analyze_endpoints router mounted."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from analyze_endpoints import _require_authenticated_user, router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[_require_authenticated_user] = lambda: "test-user"
+    return TestClient(app)
+
+
+@pytest.fixture
+def unauthenticated_client():
+    """FastAPI test client without auth dependency overrides."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -121,6 +135,18 @@ def test_analyze_returns_recipe_list(client):
     assert body["recipes"][0]["product"] == "Calm Cacao"
 
 
+def test_analyze_requires_authenticated_session(unauthenticated_client):
+    """Anonymous callers must not be able to burn Claude subprocess time."""
+    with patch("analyze_endpoints._fetch_top_winners") as mock_fetch:
+        response = unauthenticated_client.post(
+            "/api/recipes/analyze",
+            json={"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1},
+        )
+
+    assert response.status_code == 401
+    mock_fetch.assert_not_called()
+
+
 def test_analyze_uses_subprocess_strategy_for_claude(client):
     """1A: Analyze calls claude_client.call with strategy='subprocess'."""
     with patch(
@@ -169,6 +195,47 @@ def test_analyze_writes_proposed_drafts(client):
     assert len(saved_recipes) == 1
 
 
+def test_analyze_route_persists_real_drafts_table(tmp_path, monkeypatch, client):
+    """Route-level regression: real _save_proposed_drafts signature stays wired."""
+    db_path = tmp_path / "lens.db"
+    monkeypatch.setenv("LENS_DB_PATH", str(db_path))
+
+    import store
+
+    store.init_db()
+
+    with patch(
+        "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_IMAGE]
+    ), patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ):
+        response = client.post(
+            "/api/recipes/analyze",
+            json={"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1},
+        )
+
+    assert response.status_code == 200
+    recipe = response.json()["recipes"][0]
+    assert recipe["recipe_id"] == "r1"
+    assert recipe["draft_id"] != recipe["recipe_id"]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT draft_id, recipe_id, brand, status FROM drafts WHERE draft_id = ?",
+        (recipe["draft_id"],),
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["recipe_id"] == "r1"
+    assert row["brand"] == "DOSE OF"
+    assert row["status"] == "proposed"
+
+
 def test_save_proposed_drafts_inserts_proposed_rows(tmp_path, monkeypatch):
     """Task 2.10: Analyze recipes persist to the real drafts table."""
     db_path = tmp_path / "lens.db"
@@ -183,7 +250,7 @@ def test_save_proposed_drafts_inserts_proposed_rows(tmp_path, monkeypatch):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT brand, status, recipe_json, source_winner_ids FROM drafts WHERE recipe_id = ?",
+        "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids FROM drafts WHERE recipe_id = ?",
         ("r1",),
     ).fetchone()
     assets_table = conn.execute(
@@ -192,9 +259,12 @@ def test_save_proposed_drafts_inserts_proposed_rows(tmp_path, monkeypatch):
     conn.close()
 
     assert row is not None
+    assert row["draft_id"] != row["recipe_id"]
     assert row["brand"] == "DOSE OF"
     assert row["status"] == "proposed"
-    assert json.loads(row["recipe_json"])["angle"] == "Benefits"
+    payload = json.loads(row["recipe_json"])
+    assert payload["angle"] == "Benefits"
+    assert payload["draft_id"] == row["draft_id"]
     assert json.loads(row["source_winner_ids"]) == ["120211111111111111"]
     assert assets_table is not None
 
@@ -216,6 +286,59 @@ def test_insert_proposed_drafts_rolls_back_on_bad_recipe(tmp_path, monkeypatch):
     count = conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]
     conn.close()
     assert count == 0
+
+
+def test_insert_proposed_drafts_does_not_clobber_promoted_drafts(tmp_path, monkeypatch):
+    """Conflict updates only mutate drafts that are still proposed."""
+    db_path = tmp_path / "lens.db"
+    monkeypatch.setenv("LENS_DB_PATH", str(db_path))
+
+    import store
+
+    store.init_db()
+    first = {**_FAKE_RECIPE_RESPONSE["recipes"][0], "draft_id": "draft-1"}
+    written = store.insert_proposed_drafts("DOSE OF", [first])
+    assert written == ["draft-1"]
+
+    with store._connect() as conn:
+        conn.execute("UPDATE drafts SET status = 'launched' WHERE draft_id = ?", ("draft-1",))
+
+    changed = {**first, "angle": "Clobbered"}
+    written_again = store.insert_proposed_drafts("DOSE OF", [changed])
+    assert written_again == []
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT status, recipe_json FROM drafts WHERE draft_id = ?",
+            ("draft-1",),
+        ).fetchone()
+
+    assert row["status"] == "launched"
+    assert json.loads(row["recipe_json"])["angle"] == "Benefits"
+
+
+def test_store_connect_enables_foreign_key_cascades(tmp_path, monkeypatch):
+    db_path = tmp_path / "lens.db"
+    monkeypatch.setenv("LENS_DB_PATH", str(db_path))
+
+    import store
+
+    store.init_db()
+    draft_id = store.insert_proposed_drafts(
+        "DOSE OF", [_FAKE_RECIPE_RESPONSE["recipes"][0]]
+    )[0]
+
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO draft_assets "
+            "(asset_id, draft_id, variant_idx, path, mime_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("asset-1", draft_id, 0, "/tmp/a.png", "image/png", 1),
+        )
+        conn.execute("DELETE FROM drafts WHERE draft_id = ?", (draft_id,))
+        asset_count = conn.execute("SELECT COUNT(*) FROM draft_assets").fetchone()[0]
+
+    assert asset_count == 0
 
 
 def test_fetch_top_winners_uses_real_creatives_filters_scope_and_product():
@@ -392,14 +515,52 @@ def test_analyze_cache_distinguishes_video_frame_requests(client):
     assert mock_call.call_count == 2
 
 
+def test_analyze_cache_distinguishes_focus_product_and_top_n(client):
+    """Empty/same-winner result sets still need request-shape cache isolation."""
+    with patch(
+        "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_IMAGE]
+    ), patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ) as mock_call, patch(
+        "analyze_endpoints._save_proposed_drafts"
+    ):
+        base = {"brand": "DOSE OF", "n_recipes": 1}
+        client.post(
+            "/api/recipes/analyze",
+            json={**base, "top_n_winners": 1, "focus_product": "Calm"},
+        )
+        client.post(
+            "/api/recipes/analyze",
+            json={**base, "top_n_winners": 1, "focus_product": "Coffee"},
+        )
+        client.post(
+            "/api/recipes/analyze",
+            json={**base, "top_n_winners": 2, "focus_product": "Coffee"},
+        )
+
+    assert mock_call.call_count == 3
+
+
 # ---------------------------------------------------------------------------
 # Video frames (decision 2D integration)
 # ---------------------------------------------------------------------------
 
 
-def test_analyze_passes_video_frames_to_claude(client):
-    """Video winners → extract_frames → frames param on claude call."""
-    fake_frames = ["/tmp/f1.jpg", "/tmp/f2.jpg", "/tmp/f3.jpg"]
+def test_analyze_rejects_video_frames_until_claude_cli_attachment_is_supported(client):
+    """Video frames are extracted in a scoped tempdir, then rejected explicitly."""
+    seen_dirs: list[Path] = []
+
+    def fake_extract(_urls, *, n_frames, output_dir):
+        assert n_frames == 4
+        out = Path(output_dir)
+        assert out.exists()
+        seen_dirs.append(out)
+        frame = out / "f1.jpg"
+        frame.write_bytes(b"x")
+        return [[str(frame)]]
 
     with patch(
         "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_VIDEO]
@@ -407,13 +568,13 @@ def test_analyze_passes_video_frames_to_claude(client):
         "analyze_endpoints.brand_profile_store.get_profile",
         return_value=_FAKE_BRAND_PROFILE,
     ), patch(
-        "analyze_endpoints.extract_frames_concurrent", return_value=[fake_frames]
+        "analyze_endpoints.extract_frames_concurrent", side_effect=fake_extract
     ) as mock_ex, patch(
         "analyze_endpoints.claude_client.call", return_value={"recipes": []}
     ) as mock_call, patch(
         "analyze_endpoints._save_proposed_drafts"
     ):
-        client.post(
+        response = client.post(
             "/api/recipes/analyze",
             json={
                 "brand": "DOSE OF",
@@ -424,7 +585,10 @@ def test_analyze_passes_video_frames_to_claude(client):
         )
 
     mock_ex.assert_called_once()
-    assert mock_call.call_args.kwargs.get("frames") == fake_frames
+    assert response.status_code == 501
+    assert "Video frame attachment" in response.json()["detail"]
+    mock_call.assert_not_called()
+    assert seen_dirs and not seen_dirs[0].exists()
 
 
 def test_analyze_skips_frames_when_flag_disabled(client):
@@ -452,6 +616,32 @@ def test_analyze_skips_frames_when_flag_disabled(client):
         )
 
     mock_ex.assert_not_called()
+
+
+def test_call_subprocess_rejects_frames_without_unknown_cli_flags(tmp_path):
+    import claude_client
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"x")
+
+    with patch("claude_client.subprocess.run") as run, pytest.raises(RuntimeError) as exc:
+        claude_client.call(strategy="subprocess", prompt="p", frames=[str(frame)])
+
+    assert "--image" not in str(exc.value)
+    run.assert_not_called()
+
+
+def test_main_app_mounts_analyze_router(tmp_path, monkeypatch):
+    """Deleting app.include_router(analyze_router) must fail tests."""
+    monkeypatch.setenv("LENS_DB_PATH", str(tmp_path / "lens.db"))
+    sys.modules.pop("main", None)
+
+    import main
+
+    assert any(
+        route.path == "/api/recipes/analyze" and "POST" in (route.methods or set())
+        for route in main.app.routes
+    )
 
 
 # ---------------------------------------------------------------------------

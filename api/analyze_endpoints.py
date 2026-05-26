@@ -24,10 +24,11 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ad_analysis_endpoints import _list_creatives_impl
+from auth import require_user
 import brand_profile_store
 import claude_client
 import store
@@ -37,8 +38,9 @@ router = APIRouter()
 
 CACHE_TTL_SECONDS = 24 * 3600
 _CACHE: dict[str, tuple[float, dict]] = {}
-PROFILE_TEXT_MAX_CHARS = 300
-WINNER_TEXT_MAX_CHARS = 240
+PROFILE_PROMPT_MAX_KEYS = 6
+PROFILE_TEXT_MAX_CHARS = 120
+WINNER_TEXT_MAX_CHARS = 80
 
 _SYSTEM_PROMPT = (
     "You are a creative strategist who studies winning ads and proposes "
@@ -47,30 +49,30 @@ _SYSTEM_PROMPT = (
 )
 
 _PROFILE_PROMPT_KEYS = (
-    "description",
     "positioning_statement",
-    "tagline",
-    "mission_statement",
     "primary_persona",
     "target_audience",
     "target_personas",
-    "secondary_personas",
     "products",
     "hero_products",
     "unique_value_props",
     "functional_benefits",
     "emotional_benefits",
     "proof_points",
-    "objections",
     "voice",
     "voice_tone",
     "voice_attributes",
-    "do_say",
-    "dont_say",
     "claims_allowed",
     "claims_avoided",
-    "competitive_frame",
     "differentiator",
+    "description",
+    "tagline",
+    "mission_statement",
+    "secondary_personas",
+    "objections",
+    "do_say",
+    "dont_say",
+    "competitive_frame",
 )
 
 
@@ -114,9 +116,9 @@ def _fetch_top_winners(
     return [_winner_prompt_row(ad) for ad in candidates[:top_n]]
 
 
-def _save_proposed_drafts(brand: str, recipes: list[dict]) -> None:
+def _save_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
     """Persist recipes as `proposed` drafts (3C + 14A)."""
-    store.insert_proposed_drafts(brand, recipes)
+    return store.insert_proposed_drafts(brand, recipes)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,9 @@ def _save_proposed_drafts(brand: str, recipes: list[dict]) -> None:
 
 
 def _profile_content_hash(profile: dict) -> str:
+    # Cache invalidation intentionally hashes the full profile. The prompt
+    # below sends a compact subset to Claude to stay under CLI limits, but a
+    # hidden brand-field edit must still bust cached recipes (decision 4A).
     payload = json.dumps(profile or {}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
@@ -132,17 +137,21 @@ def _profile_content_hash(profile: dict) -> str:
 def _cache_key(
     brand: str,
     winners: list[dict],
+    top_n_winners: int,
     n_recipes: int,
     profile: dict,
+    focus_product: Optional[str] = None,
     include_video_frames: bool = False,
 ) -> str:
-    """Stable hash for (brand, winner ids, n_recipes, profile content, frames)."""
+    """Stable hash for request inputs that can change recipe content."""
     ids = sorted(str(w.get("ad_id", "")) for w in winners)
     payload = json.dumps(
         {
             "brand": brand,
             "ids": ids,
+            "top_n_winners": top_n_winners,
             "n": n_recipes,
+            "focus_product": focus_product or "",
             "profile_hash": _profile_content_hash(profile),
             "include_video_frames": include_video_frames,
         },
@@ -160,10 +169,10 @@ def _build_prompt(
     return "\n".join(
         [
             "Brand context:",
-            json.dumps(prompt_brand_ctx, ensure_ascii=False, indent=2),
+            json.dumps(prompt_brand_ctx, ensure_ascii=False, separators=(",", ":")),
             "",
             "Top winning ads (most recent 30-day audit):",
-            json.dumps(prompt_winners, ensure_ascii=False, indent=2),
+            json.dumps(prompt_winners, ensure_ascii=False, separators=(",", ":")),
             "",
             f"Recommend {n_recipes} new ad concepts that build on the patterns",
             "in the winners but explore fresh angles. Match the brand voice.",
@@ -197,13 +206,13 @@ def _prompt_safe_value(value: Any, depth: int = 2) -> Any:
     if isinstance(value, (int, float, bool)):
         return value
     if depth <= 0:
-        return _clip_text(json.dumps(value, ensure_ascii=False), max_chars=200)
+        return _clip_text(json.dumps(value, ensure_ascii=False), max_chars=100)
     if isinstance(value, list):
-        compacted = [_prompt_safe_value(v, depth - 1) for v in value[:5]]
+        compacted = [_prompt_safe_value(v, depth - 1) for v in value[:3]]
         return [v for v in compacted if v not in (None, "", [], {})]
     if isinstance(value, dict):
         compacted: dict[str, Any] = {}
-        for key, child in list(value.items())[:8]:
+        for key, child in list(value.items())[:4]:
             safe = _prompt_safe_value(child, depth - 1)
             if safe not in (None, "", [], {}):
                 compacted[str(key)] = safe
@@ -214,6 +223,8 @@ def _prompt_safe_value(value: Any, depth: int = 2) -> Any:
 def _compact_profile_for_prompt(profile: dict) -> dict:
     compacted: dict[str, Any] = {}
     for key in _PROFILE_PROMPT_KEYS:
+        if len(compacted) >= PROFILE_PROMPT_MAX_KEYS:
+            break
         if key not in (profile or {}):
             continue
         safe = _prompt_safe_value(profile.get(key))
@@ -226,8 +237,6 @@ def _compact_winner_for_prompt(winner: dict) -> dict:
     fields = (
         "ad_id",
         "name",
-        "campaign_name",
-        "adset_name",
         "spend",
         "roas",
         "purchases",
@@ -236,7 +245,6 @@ def _compact_winner_for_prompt(winner: dict) -> dict:
         "hook",
         "body",
         "product",
-        "source_status",
     )
     compacted: dict[str, Any] = {}
     for key in fields:
@@ -245,8 +253,8 @@ def _compact_winner_for_prompt(winner: dict) -> dict:
             continue
         if key == "body":
             compacted[key] = _clip_text(value, WINNER_TEXT_MAX_CHARS)
-        elif key in {"hook", "product", "name", "campaign_name", "adset_name"}:
-            compacted[key] = _clip_text(value, max_chars=160)
+        elif key in {"hook", "product", "name"}:
+            compacted[key] = _clip_text(value, max_chars=70)
         else:
             compacted[key] = value
     return compacted
@@ -353,7 +361,7 @@ def _winner_prompt_row(ad: dict) -> dict:
 
 
 def _frames_for_winners(
-    winners: list[dict], include_video_frames: bool
+    winners: list[dict], include_video_frames: bool, output_dir: Path
 ) -> list[str]:
     if not include_video_frames:
         return []
@@ -361,9 +369,8 @@ def _frames_for_winners(
     video_urls = [str(u) for u in video_urls[:3]]
     if not video_urls:
         return []
-    tmp = Path(tempfile.mkdtemp(prefix="lens-frames-"))
     frame_groups = asyncio.run(
-        extract_frames_concurrent(video_urls, n_frames=4, output_dir=tmp)
+        extract_frames_concurrent(video_urls, n_frames=4, output_dir=output_dir)
     )
     return [frame for group in frame_groups for frame in group]
 
@@ -373,16 +380,24 @@ def _frames_for_winners(
 # ---------------------------------------------------------------------------
 
 
+def _require_authenticated_user(lens_session: Optional[str] = Cookie(None)) -> str:
+    return require_user(lens_session)
+
+
 @router.post("/api/recipes/analyze")
-def analyze_recipes(req: AnalyzeRequest) -> dict:
+def analyze_recipes(
+    req: AnalyzeRequest, _fb_user_id: str = Depends(_require_authenticated_user)
+) -> dict:
     winners = _fetch_top_winners(req.brand, req.top_n_winners, req.focus_product)
     profile = brand_profile_store.get_profile(req.brand) or {}
 
     key = _cache_key(
         req.brand,
         winners,
+        req.top_n_winners,
         req.n_recipes,
         profile,
+        focus_product=req.focus_product,
         include_video_frames=req.include_video_frames,
     )
     now = time.time()
@@ -391,7 +406,18 @@ def analyze_recipes(req: AnalyzeRequest) -> dict:
         if cached and (now - cached[0] < CACHE_TTL_SECONDS):
             return cached[1]
 
-    frames = _frames_for_winners(winners, req.include_video_frames)
+    with tempfile.TemporaryDirectory(prefix="lens-frames-") as frame_dir:
+        frames = _frames_for_winners(
+            winners, req.include_video_frames, output_dir=Path(frame_dir)
+        )
+        if frames:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Video frame attachment is not supported by the Claude CLI "
+                    "path yet. Retry with include_video_frames=false."
+                ),
+            )
     prompt = _build_prompt(profile, winners, req.n_recipes)
 
     try:
@@ -409,7 +435,13 @@ def analyze_recipes(req: AnalyzeRequest) -> dict:
         )
 
     recipes = result.get("recipes", []) if isinstance(result, dict) else []
-    _save_proposed_drafts(req.brand, recipes)
+    draft_ids = _save_proposed_drafts(req.brand, recipes)
+    recipes = [
+        {**recipe, "draft_id": draft_ids[i]}
+        if i < len(draft_ids) and isinstance(recipe, dict)
+        else recipe
+        for i, recipe in enumerate(recipes)
+    ]
 
     payload = {"recipes": recipes}
     _CACHE[key] = (now, payload)

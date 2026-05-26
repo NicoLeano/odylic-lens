@@ -159,6 +159,7 @@ def clear_app_credentials() -> None:
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path(), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -230,7 +231,8 @@ def init_db() -> None:
                 created_at   INTEGER NOT NULL,
                 updated_at   INTEGER NOT NULL
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_drafts_recipe_id ON drafts (recipe_id);
+            DROP INDEX IF EXISTS idx_drafts_recipe_id;
+            CREATE INDEX IF NOT EXISTS idx_drafts_recipe_id ON drafts (recipe_id);
             CREATE INDEX IF NOT EXISTS idx_drafts_brand_status_created
                 ON drafts (brand, status, created_at DESC);
             CREATE TABLE IF NOT EXISTS draft_assets (
@@ -604,13 +606,14 @@ def insert_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
         if not isinstance(recipe, dict):
             raise ValueError("each recipe must be a dict")
         recipe_id = str(recipe.get("recipe_id") or uuid.uuid4())
-        recipe_payload = {**recipe, "recipe_id": recipe_id}
+        draft_id = str(recipe.get("draft_id") or uuid.uuid4())
+        recipe_payload = {**recipe, "recipe_id": recipe_id, "draft_id": draft_id}
         source_winner_ids = recipe_payload.get("source_winner_ids") or []
         if not isinstance(source_winner_ids, list):
             source_winner_ids = [str(source_winner_ids)]
         rows.append(
             (
-                recipe_id,
+                draft_id,
                 recipe_id,
                 brand,
                 json.dumps(recipe_payload, ensure_ascii=False, sort_keys=True),
@@ -625,16 +628,18 @@ def insert_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
         try:
             conn.execute("BEGIN IMMEDIATE")
             for row in rows:
-                conn.execute(
+                cur = conn.execute(
                     "INSERT INTO drafts "
                     "(draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, created_at, updated_at) "
                     "VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?) "
                     "ON CONFLICT(draft_id) DO UPDATE SET "
-                    "brand=excluded.brand, status='proposed', recipe_json=excluded.recipe_json, "
-                    "source_winner_ids=excluded.source_winner_ids, updated_at=excluded.updated_at",
+                    "brand=excluded.brand, recipe_json=excluded.recipe_json, "
+                    "source_winner_ids=excluded.source_winner_ids, updated_at=excluded.updated_at "
+                    "WHERE drafts.status = 'proposed'",
                     row,
                 )
-                written.append(row[0])
+                if cur.rowcount:
+                    written.append(row[0])
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

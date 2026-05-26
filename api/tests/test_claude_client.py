@@ -34,22 +34,18 @@ def test_call_subprocess_strategy_returns_parsed_json():
     assert out == {"angle": "Benefits"}
 
 
-def test_call_subprocess_with_frames_passes_image_flag(tmp_path: Path):
+def test_call_subprocess_with_frames_fails_loud_before_cli(tmp_path: Path):
     f1 = tmp_path / "a.png"
     f2 = tmp_path / "b.png"
     f1.write_bytes(b"x")
     f2.write_bytes(b"y")
     with patch("claude_client.subprocess.run") as run:
-        run.return_value = _completed(stdout='{"ok": true}')
-        claude_client.call(
-            strategy="subprocess", prompt="p", frames=[str(f1), str(f2)]
-        )
-    args = run.call_args[0][0]
-    # Each frame must show up as a `--image <path>` pair.
-    assert args.count("--image") == 2
-    idxs = [i for i, a in enumerate(args) if a == "--image"]
-    assert args[idxs[0] + 1] == str(f1)
-    assert args[idxs[1] + 1] == str(f2)
+        with pytest.raises(RuntimeError) as exc:
+            claude_client.call(
+                strategy="subprocess", prompt="p", frames=[str(f1), str(f2)]
+            )
+    assert "not supported" in str(exc.value)
+    run.assert_not_called()
 
 
 def test_call_subprocess_raises_claude_auth_expired_on_auth_stderr():
@@ -148,15 +144,16 @@ def test_call_subprocess_concatenates_system_and_prompt():
         run.return_value = _completed(stdout='{"ok": 1}')
         claude_client.call(strategy="subprocess", system="rules", prompt="task")
     args = run.call_args[0][0]
-    p_idx = args.index("-p")
-    assert args[p_idx + 1] == "rules\n\ntask"
+    assert args == ["claude", "-p", "--output-format=json"]
+    assert run.call_args.kwargs["input"] == "rules\n\ntask"
 
 
 def test_call_subprocess_runs_outside_repo_context():
     with patch("claude_client.subprocess.run") as run:
         run.return_value = _completed(stdout='{"ok": 1}')
         claude_client.call(strategy="subprocess", prompt="task")
-    assert run.call_args.kwargs["cwd"].endswith("odylic-lens-claude")
+    assert Path(run.call_args.kwargs["cwd"]) == Path.home()
+    assert run.call_args.kwargs["env"]["PWD"] == str(Path.home())
 
 
 # ---------------------------------------------------------------------------

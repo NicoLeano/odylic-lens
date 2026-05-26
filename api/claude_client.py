@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,7 +30,7 @@ _MIME_BY_EXT = {
 
 _AUTH_PATTERNS = (re.compile(r"auth", re.I), re.compile(r"expired", re.I), re.compile(r"401", re.I))
 
-_SUBPROCESS_CWD = Path("/tmp/odylic-lens-claude")
+_SUBPROCESS_CWD = Path.home()
 
 
 class ClaudeAuthExpired(RuntimeError):
@@ -157,19 +158,26 @@ def _call_subprocess(
     frames: Optional[list[str]],
     timeout: int,
 ) -> dict:
+    if frames:
+        raise RuntimeError(
+            "Claude CLI local frame attachments are not supported. "
+            "Use strategy='api' for image inputs or call without frames."
+        )
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
-    args = ["claude", "-p", full_prompt, "--output-format=json"]
-    for f in frames or []:
-        args.extend(["--image", f])
+    args = ["claude", "-p", "--output-format=json"]
 
     _SUBPROCESS_CWD.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["PWD"] = str(_SUBPROCESS_CWD)
     try:
         result = subprocess.run(
             args,
             capture_output=True,
+            input=full_prompt,
             text=True,
             timeout=timeout,
             cwd=str(_SUBPROCESS_CWD),
+            env=env,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude CLI timed out after {timeout}s")
