@@ -53,6 +53,39 @@ def test_generate_video_runs_fal_and_downloads_file(tmp_path, monkeypatch):
     assert (tmp_path / "variant-1.mp4").read_bytes() == b"video-bytes"
 
 
+def test_generate_image_runs_flux_with_static_defaults(tmp_path, monkeypatch):
+    import fal_generation
+
+    class FakeResponse:
+        headers = {"content-type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            yield b"image-bytes"
+
+    monkeypatch.setenv("FAL_KEY", "fal-key")
+    with patch(
+        "fal_generation.fal_client.run",
+        return_value={"images": [{"url": "https://fal.ai/result.png"}], "cost_usd": 0.04},
+    ) as run, patch("fal_generation.requests.get", return_value=FakeResponse()) as get:
+        assets = fal_generation.generate_image(
+            prompt="Make a static paid social image",
+            output_dir=tmp_path,
+        )
+
+    assert run.call_args.args[0] == fal_generation.DEFAULT_IMAGE_MODEL
+    assert run.call_args.kwargs["arguments"]["prompt"] == "Make a static paid social image"
+    assert run.call_args.kwargs["arguments"]["image_size"] == "portrait_4_3"
+    assert run.call_args.kwargs["arguments"]["output_format"] == "png"
+    assert get.call_args.args[0] == "https://fal.ai/result.png"
+    assert assets[0]["mime_type"] == "image/png"
+    assert assets[0]["fal_model_used"] == fal_generation.DEFAULT_IMAGE_MODEL
+    assert assets[0]["cost_usd"] == 0.04
+    assert (tmp_path / "variant-1.png").read_bytes() == b"image-bytes"
+
+
 def test_generate_video_fails_loud_when_fal_returns_no_media(tmp_path, monkeypatch):
     import fal_generation
 

@@ -2,7 +2,7 @@
 
 Analyze writes `proposed` draft rows. These endpoints move a draft
 through ready -> draft -> launched, attach manual ChatGPT uploads, and
-run fal.ai video generation without holding the global SQLite lock.
+run fal.ai image/video generation without holding the global SQLite lock.
 """
 from __future__ import annotations
 
@@ -46,9 +46,23 @@ _KNOWN_FAL_VIDEO_MODELS = {
     "fal-ai/kling-video/v1.6/standard": fal_generation.DEFAULT_VIDEO_MODEL,
     fal_generation.DEFAULT_VIDEO_MODEL: fal_generation.DEFAULT_VIDEO_MODEL,
 }
+_KNOWN_FAL_IMAGE_MODELS = {
+    "default": fal_generation.DEFAULT_IMAGE_MODEL,
+    "flux": fal_generation.DEFAULT_IMAGE_MODEL,
+    "flux-dev": fal_generation.DEFAULT_IMAGE_MODEL,
+    "flux/dev": fal_generation.DEFAULT_IMAGE_MODEL,
+    "fal-ai/flux/dev": fal_generation.DEFAULT_IMAGE_MODEL,
+    fal_generation.DEFAULT_IMAGE_MODEL: fal_generation.DEFAULT_IMAGE_MODEL,
+}
 
 
 class GenerateVideoRequest(BaseModel):
+    model_override: Optional[str] = None
+    variant_count: int = Field(default=1, ge=1, le=4)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerateImageRequest(BaseModel):
     model_override: Optional[str] = None
     variant_count: int = Field(default=1, ge=1, le=4)
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -136,6 +150,22 @@ def _video_prompt(draft: dict) -> str:
     )
 
 
+def _image_prompt(draft: dict) -> str:
+    recipe = _recipe(draft)
+    return "\n".join(
+        [
+            f"Create a static Meta ad image for {draft.get('brand', 'the brand')}.",
+            f"Product: {recipe.get('product') or 'primary product'}",
+            f"Audience: {recipe.get('persona') or 'target customer'}",
+            f"Angle: {recipe.get('angle') or 'benefit-led'}",
+            f"Hook: {recipe.get('hook') or 'clear thumb-stopping hook'}",
+            f"Copy outline: {recipe.get('copy_outline') or 'short direct-response copy'}",
+            f"Visual direction: {recipe.get('visual_direction') or 'native Meta ad creative'}",
+            "Composition: portrait paid-social static, product clearly visible, natural lighting, clean hierarchy, crop-ready for 4:5 placements, no tiny unreadable text.",
+        ]
+    )
+
+
 def _video_model_for(recipe: dict, override: Optional[str]) -> str:
     model = _known_video_model(override)
     if model:
@@ -146,12 +176,27 @@ def _video_model_for(recipe: dict, override: Optional[str]) -> str:
     return fal_generation.DEFAULT_VIDEO_MODEL
 
 
+def _image_model_for(override: Optional[str]) -> str:
+    model = _known_image_model(override)
+    if model:
+        return model
+    return fal_generation.DEFAULT_IMAGE_MODEL
+
+
 def _known_video_model(value: Any) -> Optional[str]:
     raw = str(value or "").strip()
     if not raw:
         return None
     token = raw.split(maxsplit=1)[0].strip("'\"`.,;:()[]{}<>").lower()
     return _KNOWN_FAL_VIDEO_MODELS.get(token)
+
+
+def _known_image_model(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    token = raw.split(maxsplit=1)[0].strip("'\"`.,;:()[]{}<>").lower()
+    return _KNOWN_FAL_IMAGE_MODELS.get(token)
 
 
 def _load_draft_or_404(draft_id: str) -> dict:
@@ -263,6 +308,38 @@ def generate_video(
 
     try:
         assets = fal_generation.generate_video(
+            prompt=prompt,
+            output_dir=_draft_dir(draft),
+            model_id=model_id,
+            arguments=req.arguments,
+            variant_count=req.variant_count,
+        )
+        store.insert_draft_assets(draft_id, assets, status="draft")
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    updated = store.get_draft(draft_id)
+    return {"draft": _public_draft(updated or draft)}
+
+
+@router.post("/api/drafts/{draft_id}/generate-image")
+def generate_image(
+    draft_id: str,
+    req: GenerateImageRequest,
+    _fb_user_id: str = Depends(_require_authenticated_user),
+) -> dict:
+    draft = _load_draft_or_404(draft_id)
+    _ensure_mutable(draft)
+    if draft["status"] == "proposed":
+        draft = store.set_draft_status(draft_id, "ready") or draft
+
+    prompt = _image_prompt(draft)
+    model_id = _image_model_for(req.model_override)
+
+    try:
+        assets = fal_generation.generate_image(
             prompt=prompt,
             output_dir=_draft_dir(draft),
             model_id=model_id,

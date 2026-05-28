@@ -18,6 +18,12 @@ import fal_client
 import requests
 
 DEFAULT_VIDEO_MODEL = "fal-ai/kling-video/v1.6/standard/text-to-video"
+DEFAULT_IMAGE_MODEL = "fal-ai/flux/dev"
+DEFAULT_IMAGE_ARGUMENTS = {
+    "image_size": "portrait_4_3",
+    "num_images": 1,
+    "output_format": "png",
+}
 _ALLOWED_MIME_PREFIXES = ("image/", "video/")
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -32,7 +38,7 @@ _EXT_BY_MIME = {
 
 def _require_fal_key() -> None:
     if not (os.environ.get("FAL_KEY") or os.environ.get("FAL_KEY_ID")):
-        raise RuntimeError("FAL_KEY is not configured. Add it to .env before generating video.")
+        raise RuntimeError("FAL_KEY is not configured. Add it to .env before generating media.")
 
 
 def _extract_asset_urls(value: Any) -> list[str]:
@@ -167,16 +173,16 @@ def _run_variant(
     return asset
 
 
-def generate_video(
+def _generate_assets(
     *,
     prompt: str,
     output_dir: Path,
-    model_id: str = DEFAULT_VIDEO_MODEL,
+    model_id: str,
     arguments: Optional[dict[str, Any]] = None,
     variant_count: int = 1,
     timeout: int = 360,
 ) -> list[dict]:
-    """Run fal.ai video generation and persist returned media locally."""
+    """Run fal.ai media generation and persist returned assets locally."""
     _require_fal_key()
     clean_prompt = (prompt or "").strip()
     if not clean_prompt:
@@ -235,3 +241,43 @@ def generate_video(
         )
         _remove_files([str(asset.get("path")) for asset in downloaded if asset.get("path")])
         raise
+
+
+def generate_video(
+    *,
+    prompt: str,
+    output_dir: Path,
+    model_id: str = DEFAULT_VIDEO_MODEL,
+    arguments: Optional[dict[str, Any]] = None,
+    variant_count: int = 1,
+    timeout: int = 360,
+) -> list[dict]:
+    """Run fal.ai video generation and persist returned media locally."""
+    return _generate_assets(
+        prompt=prompt,
+        output_dir=output_dir,
+        model_id=model_id or DEFAULT_VIDEO_MODEL,
+        arguments=arguments,
+        variant_count=variant_count,
+        timeout=timeout,
+    )
+
+
+def generate_image(
+    *,
+    prompt: str,
+    output_dir: Path,
+    model_id: str = DEFAULT_IMAGE_MODEL,
+    arguments: Optional[dict[str, Any]] = None,
+    variant_count: int = 1,
+    timeout: int = 180,
+) -> list[dict]:
+    """Run fal.ai static image generation and persist returned media locally."""
+    return _generate_assets(
+        prompt=prompt,
+        output_dir=output_dir,
+        model_id=model_id or DEFAULT_IMAGE_MODEL,
+        arguments={**DEFAULT_IMAGE_ARGUMENTS, **dict(arguments or {})},
+        variant_count=variant_count,
+        timeout=timeout,
+    )

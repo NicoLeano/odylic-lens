@@ -101,6 +101,17 @@ def test_video_model_resolver_allows_only_known_tokens():
     )
 
 
+def test_image_model_resolver_allows_only_known_tokens():
+    import fal_generation
+    from create_endpoints import _image_model_for
+
+    assert _image_model_for(None) == fal_generation.DEFAULT_IMAGE_MODEL
+    assert _image_model_for("flux") == fal_generation.DEFAULT_IMAGE_MODEL
+    assert _image_model_for("fal-ai/flux/dev") == fal_generation.DEFAULT_IMAGE_MODEL
+    assert _image_model_for("flux-dev cinematic") == fal_generation.DEFAULT_IMAGE_MODEL
+    assert _image_model_for("veo-3 o kling-pro") == fal_generation.DEFAULT_IMAGE_MODEL
+
+
 def test_create_routes_require_authenticated_session(unauthenticated_client):
     response = unauthenticated_client.get("/api/drafts?brand=DOSE+OF")
     assert response.status_code == 401
@@ -238,6 +249,44 @@ def test_generate_video_records_assets_without_holding_store_lock(
     assert draft["assets"][0]["mime_type"] == "video/mp4"
     assert draft["assets"][0]["cost_usd"] == 0.31
     assert draft["assets"][0]["fal_model_used"] == fal_generation.DEFAULT_VIDEO_MODEL
+
+
+def test_generate_image_records_static_asset(client, isolated_store):
+    import fal_generation
+
+    _insert_recipe(isolated_store)
+    seen: dict[str, object] = {}
+
+    def fake_generate_image(*, prompt, output_dir, model_id, arguments, variant_count):
+        seen["prompt"] = prompt
+        seen["model_id"] = model_id
+        seen["arguments"] = arguments
+        seen["variant_count"] = variant_count
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "result.png"
+        path.write_bytes(b"image")
+        return [
+            {
+                "path": str(path),
+                "mime_type": "image/png",
+                "fal_model_used": model_id,
+                "cost_usd": 0.04,
+            }
+        ]
+
+    with patch("create_endpoints.fal_generation.generate_image", side_effect=fake_generate_image):
+        response = client.post("/api/drafts/draft-1/generate-image", json={})
+
+    assert response.status_code == 200
+    draft = response.json()["draft"]
+    assert draft["status"] == "draft"
+    assert draft["assets"][0]["mime_type"] == "image/png"
+    assert draft["assets"][0]["cost_usd"] == 0.04
+    assert draft["assets"][0]["fal_model_used"] == fal_generation.DEFAULT_IMAGE_MODEL
+    assert "static Meta ad image" in str(seen["prompt"])
+    assert "Dormir mejor sin pastillas" in str(seen["prompt"])
+    assert seen["model_id"] == fal_generation.DEFAULT_IMAGE_MODEL
+    assert seen["variant_count"] == 1
 
 
 def test_generate_video_sentence_hint_uses_default_model(client, isolated_store):

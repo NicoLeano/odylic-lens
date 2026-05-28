@@ -55,6 +55,25 @@ const ASSET_DRAFT: Draft = {
   ],
 }
 
+const IMAGE_ASSET_DRAFT: Draft = {
+  ...PROPOSED_DRAFT,
+  status: 'draft',
+  updated_at: 103,
+  assets: [
+    {
+      asset_id: 'asset-image-1',
+      draft_id: 'draft-1',
+      variant_idx: 0,
+      mime_type: 'image/png',
+      fal_model_used: 'fal-ai/flux/dev',
+      cost_usd: 0.04,
+      created_at: 103,
+      filename: 'variant-1.png',
+      url: '/api/draft-assets/asset-image-1/file',
+    },
+  ],
+}
+
 function okResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -155,6 +174,29 @@ describe('CreateView', () => {
       expect(screen.getByTestId('draft-card')).toBeInTheDocument()
     })
     expect(screen.getByText('$0.31')).toBeInTheDocument()
+  })
+
+  test('generate image posts to fal route and renders the returned static asset', async () => {
+    mockFetch(async (url, init) => {
+      if (url.startsWith('/api/drafts?')) return okResponse({ drafts: [PROPOSED_DRAFT] })
+      if (url === '/api/drafts/draft-1/generate-image' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ variant_count: 1 })
+        return okResponse({ draft: IMAGE_ASSET_DRAFT })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const user = userEvent.setup()
+    render(<CreateView brand="DOSE OF" />)
+
+    await user.click(await screen.findByRole('button', { name: /generate static image/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('draft-card')).toBeInTheDocument()
+    })
+    expect(screen.getByText(/flux\/dev/)).toBeInTheDocument()
+    expect(screen.getByText('$0.04')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/static image ready/i)
   })
 
   test('discard hides a gallery draft from the active view', async () => {

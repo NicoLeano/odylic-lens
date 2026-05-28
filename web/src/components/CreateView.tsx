@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   Film,
+  Image as ImageIcon,
   ImageUp,
   Loader2,
   RefreshCcw,
@@ -117,6 +118,8 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
 
   const progressMessage = busyKey?.startsWith('video:')
     ? 'Generating video. This can take about 2 minutes.'
+    : busyKey?.startsWith('image:')
+      ? 'Generating static image.'
     : busyKey?.startsWith('upload:')
       ? 'Uploading asset.'
       : busyKey?.startsWith('copy:')
@@ -191,6 +194,24 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       showNotice('Video ready.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Video generation failed')
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function generateImage(draft: Draft) {
+    setBusy('image', draft.draft_id)
+    setError(null)
+    try {
+      const out = await api.post<DraftResponse>(
+        `/api/drafts/${encodeURIComponent(draft.draft_id)}/generate-image`,
+        { variant_count: 1 },
+      )
+      mergeDraft(out.draft)
+      setFilter('gallery')
+      showNotice('Static image ready.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Image generation failed')
     } finally {
       setBusyKey(null)
     }
@@ -363,6 +384,19 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                             className="sr-only"
                             onChange={e => uploadAsset(draft, e.currentTarget.files?.[0])}
                           />
+                          <button
+                            onClick={() => generateImage(draft)}
+                            disabled={busyKey !== null}
+                            className={`${PILL_BUTTON_BASE} bg-white/70 text-text-primary shadow-[inset_0_0_0_1px_rgba(0,0,0,0.08)]`}
+                            aria-label={`Generate static image for ${draft.recipe.hook}`}
+                          >
+                            {isBusy('image', draft.draft_id) ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <ImageIcon size={12} />
+                            )}
+                            {isBusy('image', draft.draft_id) ? 'Generating' : 'Image'}
+                          </button>
                           <button
                             onClick={() => generateVideo(draft)}
                             disabled={busyKey !== null}
