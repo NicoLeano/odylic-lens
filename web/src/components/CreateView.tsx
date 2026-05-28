@@ -22,19 +22,24 @@ type CreateViewProps = {
 type DraftsResponse = { drafts: Draft[] }
 type DraftResponse = { draft: Draft }
 type PrepareResponse = { prompt: string; draft: Draft }
+type Notice = { tone: 'success' | 'info'; message: string }
 
 const ACTIVE_STATUSES: DraftStatus[] = ['proposed', 'ready', 'draft', 'launched']
 const PENDING_STATUSES = new Set<DraftStatus>(['proposed', 'ready'])
 const GALLERY_STATUSES = new Set<DraftStatus>(['draft', 'launched'])
+const PILL_BUTTON_BASE = 'min-h-10 px-3 rounded-full text-xs inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.96] transition-[transform,background-color,color,box-shadow] duration-150'
+const ICON_BUTTON_BASE = 'h-10 w-10 rounded-full inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.96] transition-[transform,background-color,color,box-shadow] duration-150'
 
 export function CreateView({ brand, focusDraftId }: CreateViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [loading, setLoading] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [copiedDraftId, setCopiedDraftId] = useState<string | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
   const [filter, setFilter] = useState<'active' | 'pending' | 'gallery'>('active')
   const [error, setError] = useState<string | null>(null)
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const pendingDrafts = useMemo(
     () => drafts.filter(d => PENDING_STATUSES.has(d.status)),
@@ -79,6 +84,12 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
     if (focusDraftId) setFilter('pending')
   }, [focusDraftId])
 
+  useEffect(() => {
+    return () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    }
+  }, [])
+
   function mergeDraft(draft: Draft) {
     setDrafts(prev => {
       const next = [draft, ...prev.filter(d => d.draft_id !== draft.draft_id)]
@@ -98,17 +109,32 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
     return busyKey === `${action}:${draftId}`
   }
 
+  function showNotice(message: string, tone: Notice['tone'] = 'success') {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    setNotice({ tone, message })
+    noticeTimer.current = setTimeout(() => setNotice(null), 2600)
+  }
+
+  const progressMessage = busyKey?.startsWith('video:')
+    ? 'Generating video. This can take about 2 minutes.'
+    : busyKey?.startsWith('upload:')
+      ? 'Uploading asset.'
+      : busyKey?.startsWith('copy:')
+        ? 'Preparing prompt.'
+        : null
+
   async function copyPrompt(draft: Draft) {
     setBusy('copy', draft.draft_id)
     setError(null)
     try {
       const out = await api.post<PrepareResponse>(`/api/drafts/${encodeURIComponent(draft.draft_id)}/prepare`)
+      mergeDraft(out.draft)
       if (!navigator.clipboard?.writeText) {
         throw new Error('Clipboard is unavailable in this browser.')
       }
       await navigator.clipboard.writeText(out.prompt)
-      mergeDraft(out.draft)
       setCopiedDraftId(draft.draft_id)
+      showNotice('Prompt copied.')
       window.setTimeout(() => setCopiedDraftId(null), 1800)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Prompt copy failed')
@@ -142,6 +168,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       }
       mergeDraft((body as DraftResponse).draft)
       setFilter('gallery')
+      showNotice('Asset uploaded.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload failed')
     } finally {
@@ -161,6 +188,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       )
       mergeDraft(out.draft)
       setFilter('gallery')
+      showNotice('Video ready.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Video generation failed')
     } finally {
@@ -178,6 +206,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       )
       if (status === 'discarded') dropDraft(draft.draft_id)
       else mergeDraft(out.draft)
+      showNotice(status === 'discarded' ? 'Draft discarded.' : `Marked ${status}.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Draft update failed')
     } finally {
@@ -194,6 +223,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       )
       if (out.draft) mergeDraft(out.draft)
       else await loadDrafts()
+      showNotice('Asset deleted.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Asset delete failed')
     } finally {
@@ -213,8 +243,8 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
     <div className="py-6 flex flex-col gap-5">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-medium text-text-primary">Create</h2>
-          <p className="text-xs text-text-muted mt-0.5">
+          <h2 className="text-lg font-medium text-text-primary [text-wrap:balance]">Create</h2>
+          <p className="text-xs text-text-muted mt-0.5 tabular-nums">
             {brand} · {pendingDrafts.length} pending · {galleryDrafts.length} draft assets
           </p>
         </div>
@@ -228,7 +258,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
               <button
                 key={key}
                 onClick={() => setFilter(key)}
-                className={`px-3 py-1 rounded-full text-xs transition-colors ${
+                className={`min-h-10 px-3 rounded-full text-xs active:scale-[0.96] transition-[transform,background-color,color] duration-150 ${
                   filter === key ? 'bg-text-primary text-white' : 'text-text-muted hover:text-text-primary'
                 }`}
               >
@@ -239,7 +269,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
           <button
             onClick={loadDrafts}
             disabled={loading}
-            className="px-3 py-1.5 rounded-full text-xs glass glass-hover flex items-center gap-1.5 disabled:opacity-50"
+            className={`${PILL_BUTTON_BASE} glass glass-hover`}
             aria-label="Refresh drafts"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCcw size={12} />}
@@ -249,8 +279,21 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       </header>
 
       {error && (
-        <div role="alert" className="glass rounded-lg px-4 py-3 text-xs text-red-700 border border-red-200/50">
+        <div role="alert" className="glass rounded-lg px-4 py-3 text-xs text-red-700 border border-red-200/50 [text-wrap:pretty]">
           {error}
+        </div>
+      )}
+
+      {(notice || progressMessage) && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`glass rounded-lg px-4 py-3 text-xs flex items-center gap-2 ${
+            notice?.tone === 'success' ? 'text-emerald-700' : 'text-text-secondary'
+          }`}
+        >
+          {progressMessage ? <Loader2 size={14} className="animate-spin flex-shrink-0" /> : <Check size={14} className="flex-shrink-0" />}
+          <span className="[text-wrap:pretty]">{progressMessage || notice?.message}</span>
         </div>
       )}
 
@@ -272,7 +315,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
           <section className="flex flex-col gap-3 min-w-0">
             <div className="flex items-center justify-between gap-2 px-1">
               <h3 className="text-sm font-medium text-text-primary">Pending recipes</h3>
-              <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              <span className="text-[10px] uppercase tracking-wider text-text-muted tabular-nums">
                 {pendingDrafts.length}
               </span>
             </div>
@@ -288,7 +331,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                           <button
                             onClick={() => copyPrompt(draft)}
                             disabled={busyKey !== null}
-                            className="px-3 py-1.5 rounded-full text-xs glass glass-hover flex items-center gap-1.5 disabled:opacity-50"
+                            className={`${PILL_BUTTON_BASE} glass glass-hover`}
                             aria-label={`Copy ChatGPT prompt for ${draft.recipe.hook}`}
                           >
                             {isBusy('copy', draft.draft_id) ? (
@@ -298,12 +341,12 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                             ) : (
                               <ClipboardCopy size={12} />
                             )}
-                            Prompt
+                            {copiedDraftId === draft.draft_id ? 'Copied' : 'Prompt'}
                           </button>
                           <button
                             onClick={() => fileInputs.current[draft.draft_id]?.click()}
                             disabled={busyKey !== null}
-                            className="px-3 py-1.5 rounded-full text-xs glass glass-hover flex items-center gap-1.5 disabled:opacity-50"
+                            className={`${PILL_BUTTON_BASE} glass glass-hover`}
                             aria-label={`Upload image for ${draft.recipe.hook}`}
                           >
                             {isBusy('upload', draft.draft_id) ? (
@@ -323,7 +366,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                           <button
                             onClick={() => generateVideo(draft)}
                             disabled={busyKey !== null}
-                            className="px-3 py-1.5 rounded-full text-xs bg-text-primary text-white flex items-center gap-1.5 disabled:opacity-50"
+                            className={`${PILL_BUTTON_BASE} bg-text-primary text-white`}
                             aria-label={`Generate fal.ai video for ${draft.recipe.hook}`}
                           >
                             {isBusy('video', draft.draft_id) ? (
@@ -331,7 +374,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                             ) : (
                               <Film size={12} />
                             )}
-                            Video
+                            {isBusy('video', draft.draft_id) ? 'Generating' : 'Video'}
                           </button>
                         </>
                       }
@@ -349,7 +392,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
           <section className="flex flex-col gap-3 min-w-0">
             <div className="flex items-center justify-between gap-2 px-1">
               <h3 className="text-sm font-medium text-text-primary">Draft gallery</h3>
-              <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              <span className="text-[10px] uppercase tracking-wider text-text-muted tabular-nums">
                 {galleryDrafts.length}
               </span>
             </div>
@@ -397,7 +440,7 @@ function DraftGalleryCard({
 
   return (
     <article data-testid="draft-card" className="glass rounded-lg p-3 flex flex-col gap-3 h-full">
-      <div className="aspect-[4/5] rounded-lg overflow-hidden bg-black/[0.04] flex items-center justify-center">
+      <div className="aspect-[4/5] rounded-lg overflow-hidden bg-black/[0.04] flex items-center justify-center shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]">
         {asset ? (
           asset.mime_type.startsWith('video/') ? (
             <video
@@ -420,7 +463,7 @@ function DraftGalleryCard({
       </div>
       <div className="flex items-start justify-between gap-2 min-w-0">
         <div className="min-w-0">
-          <h4 className="text-sm font-medium text-text-primary leading-snug break-words">
+          <h4 className="text-sm font-medium text-text-primary leading-snug break-words [text-wrap:balance]">
             {draft.recipe.hook}
           </h4>
           <p className="text-xs text-text-muted mt-1 truncate">
@@ -436,7 +479,7 @@ function DraftGalleryCard({
               href={asset.url}
               target="_blank"
               rel="noreferrer"
-              className="p-1.5 rounded-full glass glass-hover text-text-muted hover:text-text-primary"
+              className={`${ICON_BUTTON_BASE} glass glass-hover text-text-muted hover:text-text-primary`}
               aria-label={`Open ${draft.recipe.hook} asset`}
             >
               <ExternalLink size={12} />
@@ -444,7 +487,7 @@ function DraftGalleryCard({
             <a
               href={asset.url}
               download={asset.filename}
-              className="p-1.5 rounded-full glass glass-hover text-text-muted hover:text-text-primary"
+              className={`${ICON_BUTTON_BASE} glass glass-hover text-text-muted hover:text-text-primary`}
               aria-label={`Download ${draft.recipe.hook} asset`}
             >
               <Download size={12} />
@@ -452,7 +495,7 @@ function DraftGalleryCard({
             <button
               onClick={() => onDeleteAsset(asset)}
               disabled={assetBusy}
-              className="p-1.5 rounded-full glass glass-hover text-text-muted hover:text-red-600 disabled:opacity-50"
+              className={`${ICON_BUTTON_BASE} glass glass-hover text-text-muted hover:text-red-600`}
               aria-label={`Delete ${draft.recipe.hook} asset`}
             >
               {assetBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
@@ -463,7 +506,7 @@ function DraftGalleryCard({
           <button
             onClick={onLaunch}
             disabled={busyKey !== null}
-            className="ml-auto px-3 py-1.5 rounded-full text-xs bg-text-primary text-white disabled:opacity-50"
+            className={`${PILL_BUTTON_BASE} ml-auto bg-text-primary text-white`}
             aria-label={`Mark ${draft.recipe.hook} launched`}
           >
             Launch
@@ -472,7 +515,7 @@ function DraftGalleryCard({
         <button
           onClick={onDiscard}
           disabled={busyKey !== null}
-          className={`${draft.status === 'launched' ? 'ml-auto' : ''} px-3 py-1.5 rounded-full text-xs glass glass-hover text-text-muted hover:text-red-600 disabled:opacity-50`}
+          className={`${PILL_BUTTON_BASE} ${draft.status === 'launched' ? 'ml-auto' : ''} glass glass-hover text-text-muted hover:text-red-600`}
           aria-label={`Discard ${draft.recipe.hook}`}
         >
           Discard

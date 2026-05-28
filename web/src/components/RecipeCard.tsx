@@ -25,18 +25,18 @@ export function RecipeCard({
           {recipe.funnel_position} · {recipe.format}
         </span>
       </header>
-      <h3 className="text-sm font-medium text-text-primary leading-snug break-words">
+      <h3 className="text-sm font-medium text-text-primary leading-snug break-words [text-wrap:balance]">
         {recipe.hook}
       </h3>
-      <p className="text-xs text-text-muted break-words">
+      <p className="text-xs text-text-muted break-words [text-wrap:pretty]">
         For <span className="text-text-primary">{recipe.persona}</span> · {recipe.product}
       </p>
-      <p className="text-xs text-text-muted line-clamp-3 break-words">{recipe.rationale}</p>
+      <p className="text-xs text-text-muted line-clamp-3 break-words [text-wrap:pretty]">{recipe.rationale}</p>
       <footer className="mt-auto pt-2 flex items-center justify-between gap-2 text-[10px] text-text-muted">
         <span className="truncate">{recipe.fal_model_hint}</span>
-        <span className="flex-shrink-0">{recipe.source_winner_ids.length} winner(s)</span>
+        <span className="flex-shrink-0 tabular-nums">{recipe.source_winner_ids.length} winner(s)</span>
       </footer>
-      {actions && <div className="pt-2 flex flex-wrap gap-2">{actions}</div>}
+      {actions && <div className="pt-2 flex flex-wrap gap-2 items-center">{actions}</div>}
     </article>
   )
 }

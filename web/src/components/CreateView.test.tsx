@@ -108,6 +108,8 @@ describe('CreateView', () => {
     await waitFor(async () => {
       await expect(navigator.clipboard.readText()).resolves.toBe('ChatGPT prompt body')
     })
+    expect(screen.getByRole('status')).toHaveTextContent(/prompt copied/i)
+    expect(screen.getByRole('button', { name: /copy chatgpt prompt/i })).toHaveTextContent(/copied/i)
     expect(fetch).toHaveBeenCalledWith('/api/drafts/draft-1/prepare', expect.objectContaining({ method: 'POST' }))
   })
 
