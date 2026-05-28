@@ -67,6 +67,14 @@ _FAKE_WINNER_IMAGE = {
     "purchases": 42,
     "cpa": 43.7,
     "creative_type": "image",
+    "analysis": {
+        "angle": "Guilt-free sleep ritual",
+        "persona": "Women 45+ who want sleep support without pills.",
+        "template": "Product Feature",
+        "marketAwareness": "Solution Aware",
+        "funnelPosition": "MOF",
+        "messagingDifferentiationScore": 76,
+    },
 }
 
 _FAKE_WINNER_VIDEO = {
@@ -348,6 +356,7 @@ def test_fetch_top_winners_uses_real_creatives_filters_scope_and_product():
     ads = [
         {
             "ad_id": "winner",
+            "creative_hash": "hash-winner",
             "ad_name": "Calm cacao main",
             "campaign_name": "Sales | Prospecting",
             "objective": "OUTCOME_SALES",
@@ -411,10 +420,27 @@ def test_fetch_top_winners_uses_real_creatives_filters_scope_and_product():
 
     with patch(
         "analyze_endpoints._list_creatives_impl", return_value={"ads": ads}
-    ) as mock_list:
+    ) as mock_list, patch(
+        "analyze_endpoints._analyses_for_hashes",
+        return_value=(
+            {
+                "hash-winner": {
+                    "analysis": {
+                        "angle": "Guilt-free ritual",
+                        "persona": "Women 45+ anxious sleepers",
+                        "template": "Product Feature",
+                        "marketAwareness": "Solution Aware",
+                        "funnelPosition": "MOF",
+                    }
+                }
+            },
+            {"winner": "hash-winner"},
+        ),
+    ):
         winners = _fetch_top_winners("DOSE OF", top_n=2, focus_product="Calm")
 
     assert [w["ad_id"] for w in winners] == ["winner", "second"]
+    assert winners[0]["analysis"]["angle"] == "Guilt-free ritual"
     assert winners[1]["creative_type"] == "video"
     assert winners[1]["video_url"] == "https://cdn.example/ad.mp4"
     assert mock_list.call_args.kwargs["brand"] == "DOSE OF"
@@ -485,6 +511,35 @@ def test_analyze_cache_invalidates_on_profile_change(client):
 
         # Voice edit → next call must NOT hit cache
         mock_prof.return_value = profile_v2
+        client.post("/api/recipes/analyze", json=body)
+
+    assert mock_call.call_count == 2
+
+
+def test_analyze_cache_invalidates_on_winner_analysis_change(client):
+    """Refreshing cached AI tags changes recipe inputs and must bust cache."""
+    body = {"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1}
+    winner_v1 = {
+        **_FAKE_WINNER_IMAGE,
+        "analysis": {**_FAKE_WINNER_IMAGE["analysis"], "angle": "Sleep ritual"},
+    }
+    winner_v2 = {
+        **_FAKE_WINNER_IMAGE,
+        "analysis": {**_FAKE_WINNER_IMAGE["analysis"], "angle": "Cost objection"},
+    }
+
+    with patch("analyze_endpoints._fetch_top_winners") as mock_fetch, patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ) as mock_call, patch(
+        "analyze_endpoints._save_proposed_drafts"
+    ):
+        mock_fetch.return_value = [winner_v1]
+        client.post("/api/recipes/analyze", json=body)
+
+        mock_fetch.return_value = [winner_v2]
         client.post("/api/recipes/analyze", json=body)
 
     assert mock_call.call_count == 2
@@ -692,6 +747,8 @@ def test_build_prompt_includes_brand_winners_and_count():
     # Brand context surfaces
     assert "Calm Cacao" in prompt
     assert "45+ women" in prompt
+    assert "Guilt-free sleep ritual" in prompt
+    assert "Solution Aware" in prompt
     # Winner ids surface
     assert _FAKE_WINNER_IMAGE["ad_id"] in prompt
     assert _FAKE_WINNER_VIDEO["ad_id"] in prompt
@@ -702,6 +759,64 @@ def test_build_prompt_includes_brand_winners_and_count():
     assert "angle" in prompt
     assert '"fal_model_hint": "default|kling"' in prompt
     assert "one short token only" in prompt
+
+
+def test_compact_profile_prioritizes_products_proof_and_guardrails():
+    from analyze_endpoints import _compact_profile_for_prompt
+
+    profile = {
+        "positioning_statement": "Functional rituals for women 45+",
+        "primary_persona": "Women 45+",
+        "target_audience": "Mexico",
+        "target_personas": ["Sleep", "Energy"],
+        "voice": "warm",
+        "products": ["Calm Cacao", "Mushroom Coffee"],
+        "proof_points": ["Customer reviews", "Clean ingredients"],
+        "objections": ["Price", "Skepticism about sleep claims"],
+        "claims_allowed": ["supports relaxation"],
+        "claims_avoided": ["cures insomnia"],
+        "dont_say": ["medicine", "guaranteed cure"],
+    }
+
+    compacted = _compact_profile_for_prompt(profile)
+
+    assert len(compacted) == 6
+    assert "products" in compacted
+    assert "proof_points" in compacted
+    assert "objections" in compacted
+    assert "claims_allowed" in compacted
+    assert "claims_avoided" in compacted
+    assert "dont_say" in compacted
+    assert "positioning_statement" not in compacted
+
+
+def test_compact_winner_includes_ai_tags_and_transcript_but_not_media_url():
+    from analyze_endpoints import _compact_winner_for_prompt
+
+    winner = {
+        **_FAKE_WINNER_VIDEO,
+        "analysis": {
+            "angle": "Cost comparison",
+            "persona": "Women 45+ considering sleep aids",
+            "template": "Problem/Solution",
+            "marketAwareness": "Problem Aware",
+            "funnelPosition": "TOF",
+            "messagingDifferentiationSummary": "Specific objection handling beats generic wellness copy.",
+            "ignored_blob": "x" * 1000,
+        },
+        "transcript": "Me tomaba pastillas para dormir hasta que cambié mi rutina nocturna.",
+        "video_url": "https://cdn.example/secret-video.mp4",
+    }
+
+    compacted = _compact_winner_for_prompt(winner)
+
+    assert compacted["analysis"]["angle"] == "Cost comparison"
+    assert compacted["analysis"]["template"] == "Problem/Solution"
+    assert compacted["analysis"]["marketAwareness"] == "Problem Aware"
+    assert "ignored_blob" not in compacted["analysis"]
+    assert "pastillas para dormir" in compacted["transcript"]
+    assert len(compacted["transcript"]) <= 400
+    assert "video_url" not in compacted
 
 
 def test_build_prompt_compacts_large_profile_and_omits_media_urls():

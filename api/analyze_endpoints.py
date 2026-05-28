@@ -27,7 +27,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ad_analysis_endpoints import _list_creatives_impl
+from ad_analysis_endpoints import _analyses_for_hashes, _list_creatives_impl
 from auth import require_user
 import brand_profile_store
 import claude_client
@@ -41,6 +41,18 @@ _CACHE: dict[str, tuple[float, dict]] = {}
 PROFILE_PROMPT_MAX_KEYS = 6
 PROFILE_TEXT_MAX_CHARS = 120
 WINNER_TEXT_MAX_CHARS = 80
+WINNER_ANALYSIS_TEXT_MAX_CHARS = 140
+WINNER_TRANSCRIPT_TEXT_MAX_CHARS = 400
+
+_PROFILE_REQUIRED_PROMPT_KEYS = (
+    "products",
+    "hero_products",
+    "proof_points",
+    "objections",
+    "claims_allowed",
+    "claims_avoided",
+    "dont_say",
+)
 
 _SYSTEM_PROMPT = (
     "You are a creative strategist who studies winning ads and proposes "
@@ -113,7 +125,9 @@ def _fetch_top_winners(
         key=lambda ad: (_winner_score(ad), _num(ad.get("purchases")), _num(ad.get("spend"))),
         reverse=True,
     )
-    return [_winner_prompt_row(ad) for ad in candidates[:top_n]]
+    winners = candidates[:top_n]
+    _attach_cached_analysis(winners)
+    return [_winner_prompt_row(ad) for ad in winners]
 
 
 def _save_proposed_drafts(brand: str, recipes: list[dict]) -> list[str]:
@@ -145,10 +159,22 @@ def _cache_key(
 ) -> str:
     """Stable hash for request inputs that can change recipe content."""
     ids = sorted(str(w.get("ad_id", "")) for w in winners)
+    analysis_payload = [
+        {
+            "ad_id": str(w.get("ad_id", "")),
+            "analysis": _compact_analysis_for_prompt(w.get("analysis")),
+            "transcript": _clip_text(
+                w.get("transcript") or w.get("video_transcript"),
+                max_chars=WINNER_TRANSCRIPT_TEXT_MAX_CHARS,
+            ),
+        }
+        for w in sorted(winners, key=lambda item: str(item.get("ad_id", "")))
+    ]
     payload = json.dumps(
         {
             "brand": brand,
             "ids": ids,
+            "analysis": analysis_payload,
             "top_n_winners": top_n_winners,
             "n": n_recipes,
             "focus_product": focus_product or "",
@@ -224,7 +250,14 @@ def _prompt_safe_value(value: Any, depth: int = 2) -> Any:
 
 def _compact_profile_for_prompt(profile: dict) -> dict:
     compacted: dict[str, Any] = {}
-    for key in _PROFILE_PROMPT_KEYS:
+    # Required keys are the brand-safety and offer-accuracy signal that
+    # should not be crowded out by broad positioning fields when the compact
+    # prompt hits PROFILE_PROMPT_MAX_KEYS.
+    ordered_keys = (
+        *[key for key in _PROFILE_REQUIRED_PROMPT_KEYS if key in (profile or {})],
+        *[key for key in _PROFILE_PROMPT_KEYS if key not in _PROFILE_REQUIRED_PROMPT_KEYS],
+    )
+    for key in ordered_keys:
         if len(compacted) >= PROFILE_PROMPT_MAX_KEYS:
             break
         if key not in (profile or {}):
@@ -258,6 +291,48 @@ def _compact_winner_for_prompt(winner: dict) -> dict:
         elif key in {"hook", "product", "name"}:
             compacted[key] = _clip_text(value, max_chars=70)
         else:
+            compacted[key] = value
+    analysis = _compact_analysis_for_prompt(winner.get("analysis"))
+    if analysis:
+        compacted["analysis"] = analysis
+    transcript = _clip_text(
+        winner.get("transcript") or winner.get("video_transcript"),
+        max_chars=WINNER_TRANSCRIPT_TEXT_MAX_CHARS,
+    )
+    if transcript:
+        compacted["transcript"] = transcript
+    return compacted
+
+
+def _compact_analysis_for_prompt(analysis: Any) -> dict[str, Any]:
+    if not isinstance(analysis, dict) or analysis.get("error"):
+        return {}
+    fields = (
+        "angle",
+        "hook",
+        "concept",
+        "persona",
+        "template",
+        "marketAwareness",
+        "marketSophistication",
+        "funnelPosition",
+        "sentiment",
+        "emotion",
+        "style",
+        "offer",
+        "messagingDifferentiationScore",
+        "messagingDifferentiationSummary",
+        "visualDifferentiationScore",
+        "visualDifferentiationSummary",
+    )
+    compacted: dict[str, Any] = {}
+    for key in fields:
+        value = analysis.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str):
+            compacted[key] = _clip_text(value, max_chars=WINNER_ANALYSIS_TEXT_MAX_CHARS)
+        elif isinstance(value, (int, float, bool)):
             compacted[key] = value
     return compacted
 
@@ -343,6 +418,33 @@ def _creative_type(ad: dict) -> str:
     return "image"
 
 
+def _attach_cached_analysis(ads: list[dict]) -> None:
+    hashes = {str(ad.get("creative_hash")) for ad in ads if ad.get("creative_hash")}
+    ids = {str(ad.get("ad_id")) for ad in ads if ad.get("ad_id")}
+    if not hashes and not ids:
+        return
+    try:
+        analyses, ad_id_to_hash = _analyses_for_hashes(hashes, ids)
+    except Exception:
+        return
+    for ad in ads:
+        chash = str(ad.get("creative_hash") or "")
+        if not chash:
+            chash = ad_id_to_hash.get(str(ad.get("ad_id") or ""), "")
+        entry = analyses.get(chash) if chash else None
+        analysis = entry.get("analysis") if isinstance(entry, dict) else None
+        if isinstance(analysis, dict):
+            ad["analysis"] = analysis
+
+
+def _first_nonempty(ad: dict, keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = ad.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
 def _winner_prompt_row(ad: dict) -> dict:
     return {
         "ad_id": str(ad.get("ad_id") or ""),
@@ -357,6 +459,17 @@ def _winner_prompt_row(ad: dict) -> dict:
         "hook": ad.get("title") or "",
         "body": ad.get("body") or "",
         "product": ad.get("product") or ad.get("products") or "",
+        "analysis": _first_nonempty(ad, ("analysis", "creative_analysis", "ai_analysis")),
+        "transcript": _first_nonempty(
+            ad,
+            (
+                "transcript",
+                "video_transcript",
+                "whisper_transcript",
+                "script",
+                "video_script",
+            ),
+        ),
         "video_url": ad.get("video_source_url") or ad.get("video_url"),
         "source_status": ad.get("effective_status") or ad.get("configured_status"),
     }
