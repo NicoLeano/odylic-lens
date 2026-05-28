@@ -5,12 +5,14 @@
 // clipboard helper (decision 6A).
 
 import { useState } from 'react'
-import { ArrowRight, Loader2, RefreshCcw, Sparkles, ShieldAlert, Copy, Check } from 'lucide-react'
+import { ArrowRight, Ban, Loader2, RefreshCcw, Sparkles, ShieldAlert, Copy, Check } from 'lucide-react'
 import { api, ApiError } from '../lib/api'
 import { RecipeCard } from './RecipeCard'
+import { RejectRecipeDialog } from './RejectRecipeDialog'
 import type { Recipe } from '../types/creative'
 
 type AnalyzeResponse = { recipes: Recipe[] }
+type DraftResponse = { draft: { draft_id: string } }
 
 type RequestBody = {
   brand: string
@@ -20,6 +22,8 @@ type RequestBody = {
   include_video_frames?: boolean
   regenerate?: boolean
 }
+
+const PILL_BUTTON_BASE = 'min-h-10 px-3 rounded-full text-xs inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.96] transition-[transform,background-color,color,box-shadow] duration-150'
 
 export function AnalyzeView({
   brand,
@@ -32,6 +36,9 @@ export function AnalyzeView({
   const [recipes, setRecipes] = useState<Recipe[] | null>(null)
   const [authExpired, setAuthExpired] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [rejectingDraftId, setRejectingDraftId] = useState<string | null>(null)
+  const [rejectTarget, setRejectTarget] = useState<Recipe | null>(null)
 
   async function runAnalyze(regenerate: boolean) {
     if (!brand) {
@@ -40,6 +47,7 @@ export function AnalyzeView({
     }
     setLoading(true)
     setError(null)
+    setNotice(null)
     setAuthExpired(false)
     const body: RequestBody = {
       brand,
@@ -62,12 +70,43 @@ export function AnalyzeView({
     }
   }
 
+  async function rejectRecipe(recipe: Recipe, rejection_reason: string) {
+    if (!recipe.draft_id) {
+      setError('Recipe is missing a draft id.')
+      return
+    }
+    setRejectingDraftId(recipe.draft_id)
+    setError(null)
+    try {
+      await api.patch<DraftResponse>(
+        `/api/drafts/${encodeURIComponent(recipe.draft_id)}`,
+        { status: 'discarded', rejection_reason },
+      )
+      setRecipes(prev => prev?.filter(r => r.draft_id !== recipe.draft_id) ?? prev)
+      setRejectTarget(null)
+      setNotice('Recipe rejected. Future Analyze runs will avoid similar patterns.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Recipe rejection failed')
+    } finally {
+      setRejectingDraftId(null)
+    }
+  }
+
   if (authExpired) {
     return <ReauthCard onRetry={() => runAnalyze(false)} />
   }
 
   return (
     <div className="py-6 flex flex-col gap-4">
+      {rejectTarget && (
+        <RejectRecipeDialog
+          hook={rejectTarget.hook}
+          busy={rejectingDraftId === rejectTarget.draft_id}
+          onCancel={() => setRejectTarget(null)}
+          onConfirm={reason => rejectRecipe(rejectTarget, reason)}
+        />
+      )}
+
       <header className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium text-text-primary">Recipe Analyze</h2>
@@ -115,6 +154,17 @@ export function AnalyzeView({
         </div>
       )}
 
+      {notice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="glass rounded-lg px-4 py-3 text-xs flex items-center gap-2 text-emerald-700"
+        >
+          <Check size={14} className="flex-shrink-0" />
+          <span className="[text-wrap:pretty]">{notice}</span>
+        </div>
+      )}
+
       {loading && !recipes && (
         <div className="glass rounded-2xl p-12 flex flex-col items-center gap-3 text-text-muted text-sm">
           <Loader2 size={20} className="animate-spin" />
@@ -124,7 +174,9 @@ export function AnalyzeView({
 
       {recipes && recipes.length === 0 && !loading && (
         <div className="glass rounded-2xl p-12 text-center text-text-muted text-sm">
-          No recipes returned. Try regenerating, or check that the brand has recent winning ads.
+          {notice
+            ? 'No recipes remaining in this run.'
+            : 'No recipes returned. Try regenerating, or check that the brand has recent winning ads.'}
         </div>
       )}
 
@@ -135,15 +187,33 @@ export function AnalyzeView({
               <RecipeCard
                 recipe={r}
                 actions={
-                  onSendToCreate && r.draft_id ? (
-                    <button
-                      onClick={() => onSendToCreate(r.draft_id as string)}
-                      className="px-3 py-1.5 rounded-full text-xs bg-text-primary text-white flex items-center gap-1.5"
-                      aria-label={`Open ${r.hook} in Create`}
-                    >
-                      <ArrowRight size={12} />
-                      Open in Create
-                    </button>
+                  r.draft_id ? (
+                    <>
+                      <button
+                        onClick={() => setRejectTarget(r)}
+                        disabled={rejectingDraftId !== null || loading}
+                        className={`${PILL_BUTTON_BASE} glass glass-hover text-text-muted hover:text-red-600`}
+                        aria-label={`Reject ${r.hook}`}
+                      >
+                        {rejectingDraftId === r.draft_id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Ban size={12} />
+                        )}
+                        Reject
+                      </button>
+                      {onSendToCreate ? (
+                        <button
+                          onClick={() => onSendToCreate(r.draft_id as string)}
+                          disabled={rejectingDraftId !== null || loading}
+                          className={`${PILL_BUTTON_BASE} bg-text-primary text-white`}
+                          aria-label={`Open ${r.hook} in Create`}
+                        >
+                          <ArrowRight size={12} />
+                          Open in Create
+                        </button>
+                      ) : null}
+                    </>
                   ) : null
                 }
               />

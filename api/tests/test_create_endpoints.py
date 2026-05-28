@@ -342,6 +342,48 @@ def test_patch_discarded_hides_draft_from_default_list(client, isolated_store):
     assert list_response.json()["drafts"] == []
 
 
+def test_patch_discarded_with_rejection_reason_persists_feedback(client, isolated_store):
+    _insert_recipe(isolated_store)
+
+    response = client.patch(
+        "/api/drafts/draft-1",
+        json={
+            "status": "discarded",
+            "rejection_reason": "Too close to the nighttime cacao ritual.",
+        },
+    )
+
+    assert response.status_code == 200
+    draft = response.json()["draft"]
+    assert draft["status"] == "discarded"
+    assert draft["rejection_reason"] == "Too close to the nighttime cacao ritual."
+    assert isinstance(draft["rejected_at"], int)
+
+    feedback = isolated_store.list_rejected_recipe_feedback("DOSE OF")
+    assert len(feedback) == 1
+    assert feedback[0]["draft_id"] == "draft-1"
+    assert feedback[0]["recipe"]["hook"] == "Dormir mejor sin pastillas"
+    assert feedback[0]["rejection_reason"] == "Too close to the nighttime cacao ritual."
+
+
+def test_reactivating_discarded_draft_clears_rejection_feedback(client, isolated_store):
+    _insert_recipe(isolated_store)
+    isolated_store.set_draft_status(
+        "draft-1",
+        "discarded",
+        rejection_reason="Not differentiated enough.",
+    )
+
+    response = client.patch("/api/drafts/draft-1", json={"status": "ready"})
+
+    assert response.status_code == 200
+    draft = response.json()["draft"]
+    assert draft["status"] == "ready"
+    assert draft["rejection_reason"] is None
+    assert draft["rejected_at"] is None
+    assert isolated_store.list_rejected_recipe_feedback("DOSE OF") == []
+
+
 def test_delete_draft_asset_removes_file_and_row(client, isolated_store, tmp_path):
     _insert_recipe(isolated_store)
     asset_path = tmp_path / "drafts" / "asset.mp4"

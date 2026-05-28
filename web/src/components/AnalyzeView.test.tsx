@@ -1,8 +1,8 @@
-// 6 Vitest tests for AnalyzeView (Task 2.11 / decision 10A).
+// Vitest tests for AnalyzeView (Task 2.11 / decision 10A).
 // Coverage: empty CTA / fetch on click / recipe card render /
 // 401-Re-auth flow / regenerate bypass / non-401 error banner.
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -47,6 +47,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
 })
@@ -107,6 +108,38 @@ describe('AnalyzeView', () => {
     await user.click(await screen.findByRole('button', { name: /open .* in create/i }))
 
     expect(onSendToCreate).toHaveBeenCalledWith('draft-1')
+  })
+
+  test('Reject action discards a persisted recipe with feedback', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    mockFetch(async (url, init) => {
+      if (url === '/api/recipes/analyze') {
+        return okResponse({ recipes: [{ ...RECIPE, draft_id: 'draft-1' }] })
+      }
+      if (url === '/api/drafts/draft-1' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          status: 'discarded',
+          rejection_reason: 'Too similar to last month.',
+        })
+        return okResponse({ draft: { draft_id: 'draft-1' } })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    render(<AnalyzeView brand="DOSE OF" />)
+    await user.click(screen.getByRole('button', { name: /generate recipes/i }))
+    await user.click(await screen.findByRole('button', { name: /reject/i }))
+    const dialog = await screen.findByRole('dialog')
+    const reason = within(dialog).getByLabelText(/rejection reason/i)
+    await user.clear(reason)
+    await user.type(reason, 'Too similar to last month.')
+    await user.click(within(dialog).getByRole('button', { name: /^reject$/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('recipe-card')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(/future analyze runs/i)
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   test('401 ClaudeAuthExpired renders the Re-authenticate card with copy command', async () => {

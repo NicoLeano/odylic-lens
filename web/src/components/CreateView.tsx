@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Ban,
   Check,
   ClipboardCopy,
   Download,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react'
 import { api, ApiError } from '../lib/api'
 import { RecipeCard } from './RecipeCard'
+import { RejectRecipeDialog } from './RejectRecipeDialog'
 import type { Draft, DraftAsset, DraftStatus } from '../types/creative'
 
 type CreateViewProps = {
@@ -39,6 +41,7 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
   const [notice, setNotice] = useState<Notice | null>(null)
   const [filter, setFilter] = useState<'active' | 'pending' | 'gallery'>('active')
   const [error, setError] = useState<string | null>(null)
+  const [rejectTarget, setRejectTarget] = useState<Draft | null>(null)
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -122,8 +125,10 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
       ? 'Generating static image.'
     : busyKey?.startsWith('upload:')
       ? 'Uploading asset.'
-      : busyKey?.startsWith('copy:')
-        ? 'Preparing prompt.'
+    : busyKey?.startsWith('copy:')
+      ? 'Preparing prompt.'
+      : busyKey?.startsWith('reject:')
+        ? 'Rejecting recipe.'
         : null
 
   async function copyPrompt(draft: Draft) {
@@ -235,6 +240,24 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
     }
   }
 
+  async function rejectDraft(draft: Draft, rejection_reason: string) {
+    setBusy('reject', draft.draft_id)
+    setError(null)
+    try {
+      await api.patch<DraftResponse>(
+        `/api/drafts/${encodeURIComponent(draft.draft_id)}`,
+        { status: 'discarded', rejection_reason },
+      )
+      dropDraft(draft.draft_id)
+      setRejectTarget(null)
+      showNotice('Recipe rejected. Future Analyze runs will avoid similar patterns.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Recipe rejection failed')
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
   async function deleteAsset(asset: DraftAsset) {
     setBusyKey(`asset:${asset.asset_id}`)
     setError(null)
@@ -262,6 +285,15 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
 
   return (
     <div className="py-6 flex flex-col gap-5">
+      {rejectTarget && (
+        <RejectRecipeDialog
+          hook={rejectTarget.recipe.hook}
+          busy={isBusy('reject', rejectTarget.draft_id)}
+          onCancel={() => setRejectTarget(null)}
+          onConfirm={reason => rejectDraft(rejectTarget, reason)}
+        />
+      )}
+
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium text-text-primary [text-wrap:balance]">Create</h2>
@@ -409,6 +441,19 @@ export function CreateView({ brand, focusDraftId }: CreateViewProps) {
                               <Film size={12} />
                             )}
                             {isBusy('video', draft.draft_id) ? 'Generating' : 'Video'}
+                          </button>
+                          <button
+                            onClick={() => setRejectTarget(draft)}
+                            disabled={busyKey !== null}
+                            className={`${PILL_BUTTON_BASE} glass glass-hover text-text-muted hover:text-red-600`}
+                            aria-label={`Reject ${draft.recipe.hook}`}
+                          >
+                            {isBusy('reject', draft.draft_id) ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Ban size={12} />
+                            )}
+                            Reject
                           </button>
                         </>
                       }

@@ -163,6 +163,12 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     with _LOCK, _connect() as conn:
         conn.executescript("""
@@ -228,6 +234,8 @@ def init_db() -> None:
                 recipe_json  TEXT NOT NULL,
                 source_winner_ids TEXT NOT NULL DEFAULT '[]',
                 meta_ad_id   TEXT,
+                rejection_reason TEXT,
+                rejected_at  INTEGER,
                 created_at   INTEGER NOT NULL,
                 updated_at   INTEGER NOT NULL
             );
@@ -249,6 +257,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_draft_assets_draft_id
                 ON draft_assets (draft_id, variant_idx);
         """)
+        _ensure_column(conn, "drafts", "rejection_reason", "TEXT")
+        _ensure_column(conn, "drafts", "rejected_at", "INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drafts_brand_rejected_at "
+            "ON drafts (brand, rejected_at DESC) WHERE rejection_reason IS NOT NULL"
+        )
 
 
 def upsert_user(fb_user_id: str, name: Optional[str], email: Optional[str]) -> None:
@@ -680,6 +694,8 @@ def _draft_from_row(row: sqlite3.Row, assets: Optional[list[dict]] = None) -> di
         "recipe": recipe if isinstance(recipe, dict) else {},
         "source_winner_ids": source_winner_ids if isinstance(source_winner_ids, list) else [],
         "meta_ad_id": row["meta_ad_id"],
+        "rejection_reason": row["rejection_reason"],
+        "rejected_at": row["rejected_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "assets": assets or [],
@@ -753,7 +769,7 @@ def list_drafts(
     with _LOCK, _connect() as conn:
         rows = conn.execute(
             "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
-            "meta_ad_id, created_at, updated_at "
+            "meta_ad_id, rejection_reason, rejected_at, created_at, updated_at "
             f"FROM drafts WHERE {' AND '.join(clauses)} "
             "ORDER BY created_at DESC, draft_id DESC LIMIT ?",
             params,
@@ -770,7 +786,8 @@ def get_draft(draft_id: str, *, include_assets: bool = True) -> Optional[dict]:
     with _LOCK, _connect() as conn:
         row = conn.execute(
             "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
-            "meta_ad_id, created_at, updated_at FROM drafts WHERE draft_id = ?",
+            "meta_ad_id, rejection_reason, rejected_at, created_at, updated_at "
+            "FROM drafts WHERE draft_id = ?",
             (draft_id,),
         ).fetchone()
         if not row:
@@ -784,11 +801,39 @@ def set_draft_status(
     status: str,
     *,
     meta_ad_id: Optional[str] = None,
+    rejection_reason: Optional[str] = None,
 ) -> Optional[dict]:
     status = _validate_draft_status(status)
     now = int(time.time())
+    clean_rejection = str(rejection_reason or "").strip()[:500]
     with _LOCK, _connect() as conn:
-        if meta_ad_id is None:
+        if status == "discarded" and clean_rejection:
+            if meta_ad_id is None:
+                cur = conn.execute(
+                    "UPDATE drafts SET status = ?, rejection_reason = ?, rejected_at = ?, "
+                    "updated_at = ? WHERE draft_id = ?",
+                    (status, clean_rejection, now, now, draft_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE drafts SET status = ?, meta_ad_id = ?, rejection_reason = ?, "
+                    "rejected_at = ?, updated_at = ? WHERE draft_id = ?",
+                    (status, meta_ad_id, clean_rejection, now, now, draft_id),
+                )
+        elif status != "discarded":
+            if meta_ad_id is None:
+                cur = conn.execute(
+                    "UPDATE drafts SET status = ?, rejection_reason = NULL, rejected_at = NULL, "
+                    "updated_at = ? WHERE draft_id = ?",
+                    (status, now, draft_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE drafts SET status = ?, meta_ad_id = ?, rejection_reason = NULL, "
+                    "rejected_at = NULL, updated_at = ? WHERE draft_id = ?",
+                    (status, meta_ad_id, now, draft_id),
+                )
+        elif meta_ad_id is None:
             cur = conn.execute(
                 "UPDATE drafts SET status = ?, updated_at = ? WHERE draft_id = ?",
                 (status, now, draft_id),
@@ -801,6 +846,24 @@ def set_draft_status(
         if not cur.rowcount:
             return None
     return get_draft(draft_id)
+
+
+def list_rejected_recipe_feedback(brand: str, *, limit: int = 20) -> list[dict]:
+    """Return recent rejected recipes with reasons for Analyze avoidance."""
+    if not brand:
+        raise ValueError("brand is required")
+    limit = min(max(int(limit or 20), 1), 50)
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
+            "meta_ad_id, rejection_reason, rejected_at, created_at, updated_at "
+            "FROM drafts "
+            "WHERE brand = ? AND status = 'discarded' "
+            "AND rejection_reason IS NOT NULL AND TRIM(rejection_reason) <> '' "
+            "ORDER BY COALESCE(rejected_at, updated_at) DESC, draft_id DESC LIMIT ?",
+            (brand, limit),
+        ).fetchall()
+    return [_draft_from_row(row, []) for row in rows]
 
 
 def insert_draft_assets(
@@ -908,7 +971,8 @@ def delete_draft(draft_id: str) -> Optional[dict]:
     with _LOCK, _connect() as conn:
         row = conn.execute(
             "SELECT draft_id, recipe_id, brand, status, recipe_json, source_winner_ids, "
-            "meta_ad_id, created_at, updated_at FROM drafts WHERE draft_id = ?",
+            "meta_ad_id, rejection_reason, rejected_at, created_at, updated_at "
+            "FROM drafts WHERE draft_id = ?",
             (draft_id,),
         ).fetchone()
         if not row:

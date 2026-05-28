@@ -36,6 +36,8 @@ export type Draft = {
   recipe: Recipe
   source_winner_ids: string[]
   meta_ad_id?: string | null
+  rejection_reason?: string | null
+  rejected_at?: number | null
   created_at: number
   updated_at: number
   assets: DraftAsset[]

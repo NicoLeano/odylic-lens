@@ -71,6 +71,7 @@ class GenerateImageRequest(BaseModel):
 class UpdateDraftRequest(BaseModel):
     status: Optional[str] = None
     meta_ad_id: Optional[str] = None
+    rejection_reason: Optional[str] = None
 
 
 def _require_authenticated_user(lens_session: Optional[str] = Cookie(None)) -> str:
@@ -415,7 +416,12 @@ def update_draft(
     draft = _load_draft_or_404(draft_id)
     status = req.status or draft["status"]
     try:
-        updated = store.set_draft_status(draft_id, status, meta_ad_id=req.meta_ad_id)
+        updated = store.set_draft_status(
+            draft_id,
+            status,
+            meta_ad_id=req.meta_ad_id,
+            rejection_reason=req.rejection_reason,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"draft": _public_draft(updated or draft)}

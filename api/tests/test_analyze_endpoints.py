@@ -178,6 +178,45 @@ def test_analyze_uses_subprocess_strategy_for_claude(client):
     assert isinstance(kwargs.get("prompt"), str)
 
 
+def test_analyze_passes_rejected_feedback_into_claude_prompt(client):
+    rejected = [
+        {
+            "draft_id": "draft-reject-1",
+            "recipe": {
+                "angle": "Sleep ritual",
+                "hook": "Chocolate caliente antes de dormir",
+                "persona": "45+ MX women",
+                "product": "Calm Cacao",
+                "format": "image",
+            },
+            "rejection_reason": "Too similar to last month's ritual nocturno.",
+        }
+    ]
+
+    with patch(
+        "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_IMAGE]
+    ), patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints._fetch_rejected_patterns", return_value=rejected
+    ), patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ) as mock_call, patch(
+        "analyze_endpoints._save_proposed_drafts"
+    ):
+        response = client.post(
+            "/api/recipes/analyze",
+            json={"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1},
+        )
+
+    assert response.status_code == 200
+    prompt = mock_call.call_args.kwargs["prompt"]
+    assert "Recent rejected recipe patterns" in prompt
+    assert "Too similar to last month's ritual nocturno" in prompt
+    assert "Chocolate caliente antes de dormir" in prompt
+
+
 def test_analyze_writes_proposed_drafts(client):
     """3C: Analyze persists recipes as `proposed` drafts."""
     with patch(
@@ -545,6 +584,42 @@ def test_analyze_cache_invalidates_on_winner_analysis_change(client):
     assert mock_call.call_count == 2
 
 
+def test_analyze_cache_invalidates_on_rejected_recipe_feedback_change(client):
+    """Rejecting a recipe must refresh future Analyze prompts."""
+    body = {"brand": "DOSE OF", "top_n_winners": 1, "n_recipes": 1}
+    reject_v1 = {
+        "draft_id": "draft-reject-1",
+        "recipe": {**_FAKE_RECIPE_RESPONSE["recipes"][0], "angle": "Sleep ritual"},
+        "source_winner_ids": ["120211111111111111"],
+        "rejection_reason": "Too close to the nighttime cacao ritual.",
+    }
+    reject_v2 = {
+        **reject_v1,
+        "draft_id": "draft-reject-2",
+        "rejection_reason": "Avoid cost-comparison hooks for this product.",
+    }
+
+    with patch(
+        "analyze_endpoints._fetch_top_winners", return_value=[_FAKE_WINNER_IMAGE]
+    ), patch(
+        "analyze_endpoints.brand_profile_store.get_profile",
+        return_value=_FAKE_BRAND_PROFILE,
+    ), patch(
+        "analyze_endpoints._fetch_rejected_patterns"
+    ) as mock_rejected, patch(
+        "analyze_endpoints.claude_client.call", return_value=_FAKE_RECIPE_RESPONSE
+    ) as mock_call, patch(
+        "analyze_endpoints._save_proposed_drafts"
+    ):
+        mock_rejected.return_value = [reject_v1]
+        client.post("/api/recipes/analyze", json=body)
+
+        mock_rejected.return_value = [reject_v2]
+        client.post("/api/recipes/analyze", json=body)
+
+    assert mock_call.call_count == 2
+
+
 def test_analyze_cache_distinguishes_video_frame_requests(client):
     """Frame-enabled prompts must not reuse no-frame cached recipes."""
     with patch(
@@ -759,6 +834,36 @@ def test_build_prompt_includes_brand_winners_and_count():
     assert "angle" in prompt
     assert '"fal_model_hint": "default|kling"' in prompt
     assert "one short token only" in prompt
+
+
+def test_build_prompt_includes_rejected_patterns_to_avoid():
+    from analyze_endpoints import _build_prompt
+
+    prompt = _build_prompt(
+        brand_ctx=_FAKE_BRAND_PROFILE,
+        winners=[_FAKE_WINNER_IMAGE],
+        n_recipes=1,
+        rejected_patterns=[
+            {
+                "draft_id": "draft-reject-1",
+                "recipe": {
+                    "angle": "Sleep ritual",
+                    "hook": "Chocolate caliente antes de dormir",
+                    "persona": "Women 45+",
+                    "product": "Calm Cacao",
+                    "format": "image",
+                    "source_winner_ids": ["120211111111111111"],
+                },
+                "rejection_reason": "Too similar to the ritual nocturno angle.",
+            }
+        ],
+    )
+
+    assert "Recent rejected recipe patterns" in prompt
+    assert "avoid repeating" in prompt
+    assert "Too similar to the ritual nocturno angle" in prompt
+    assert "Chocolate caliente antes de dormir" in prompt
+    assert "Sleep ritual" in prompt
 
 
 def test_compact_profile_prioritizes_products_proof_and_guardrails():

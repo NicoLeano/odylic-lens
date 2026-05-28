@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
@@ -88,6 +88,7 @@ function mockFetch(impl: (url: string, init?: RequestInit) => Promise<Response>)
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -218,5 +219,41 @@ describe('CreateView', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('draft-card')).not.toBeInTheDocument()
     })
+  })
+
+  test('reject hides a pending recipe and sends feedback reason', async () => {
+    mockFetch(async (url, init) => {
+      if (url.startsWith('/api/drafts?')) return okResponse({ drafts: [PROPOSED_DRAFT] })
+      if (url === '/api/drafts/draft-1' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          status: 'discarded',
+          rejection_reason: 'Too close to the cacao ritual.',
+        })
+        return okResponse({
+          draft: {
+            ...PROPOSED_DRAFT,
+            status: 'discarded',
+            rejection_reason: 'Too close to the cacao ritual.',
+            rejected_at: 200,
+          },
+        })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const user = userEvent.setup()
+    render(<CreateView brand="DOSE OF" />)
+
+    await user.click(await screen.findByRole('button', { name: /reject dormir mejor/i }))
+    const dialog = await screen.findByRole('dialog')
+    const reason = within(dialog).getByLabelText(/rejection reason/i)
+    await user.clear(reason)
+    await user.type(reason, 'Too close to the cacao ritual.')
+    await user.click(within(dialog).getByRole('button', { name: /^reject$/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('recipe-card')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(/future analyze runs/i)
   })
 })

@@ -3,11 +3,11 @@
 Pipeline:
 1. Fetch top N winners for the brand (Task 2.10 wires real source).
 2. Load brand profile via brand_profile_store.get_profile (5A).
-3. Cache key = (brand, winner ids, n_recipes, profile-content-hash) (4A).
+3. Cache key = brand, winner signal, rejection feedback, recipe count, profile hash (4A).
 4. Optional: extract video frames for video winners (2D).
 5. Call claude_client.call(strategy='subprocess', ...) — uses Max-plan
    subscription, $0 marginal (1A).
-6. Persist recipes as `proposed` drafts (3C; stub until table lands).
+6. Persist recipes as `proposed` drafts (3C).
 7. Return `{ "recipes": [...] }`.
 
 Auth-expired path surfaces as HTTP 401 with structured detail so the
@@ -43,6 +43,7 @@ PROFILE_TEXT_MAX_CHARS = 120
 WINNER_TEXT_MAX_CHARS = 80
 WINNER_ANALYSIS_TEXT_MAX_CHARS = 140
 WINNER_TRANSCRIPT_TEXT_MAX_CHARS = 400
+REJECTION_TEXT_MAX_CHARS = 160
 
 _PROFILE_REQUIRED_PROMPT_KEYS = (
     "products",
@@ -151,6 +152,7 @@ def _profile_content_hash(profile: dict) -> str:
 def _cache_key(
     brand: str,
     winners: list[dict],
+    rejected_patterns: list[dict],
     top_n_winners: int,
     n_recipes: int,
     profile: dict,
@@ -170,11 +172,22 @@ def _cache_key(
         }
         for w in sorted(winners, key=lambda item: str(item.get("ad_id", "")))
     ]
+    rejection_payload = [
+        item for item in (
+            _compact_rejection_for_prompt(draft)
+            for draft in sorted(
+                rejected_patterns,
+                key=lambda draft: str(draft.get("draft_id", "")),
+            )
+        )
+        if item
+    ]
     payload = json.dumps(
         {
             "brand": brand,
             "ids": ids,
             "analysis": analysis_payload,
+            "rejected": rejection_payload,
             "top_n_winners": top_n_winners,
             "n": n_recipes,
             "focus_product": focus_product or "",
@@ -187,11 +200,21 @@ def _cache_key(
 
 
 def _build_prompt(
-    brand_ctx: dict, winners: list[dict], n_recipes: int
+    brand_ctx: dict,
+    winners: list[dict],
+    n_recipes: int,
+    rejected_patterns: Optional[list[dict]] = None,
 ) -> str:
     """Compose the user prompt for Claude. Tested via 9A snapshot."""
     prompt_brand_ctx = _compact_profile_for_prompt(brand_ctx)
     prompt_winners = [_compact_winner_for_prompt(w) for w in winners]
+    prompt_rejections = [
+        item for item in (
+            _compact_rejection_for_prompt(draft)
+            for draft in (rejected_patterns or [])
+        )
+        if item
+    ]
     return "\n".join(
         [
             "Brand context:",
@@ -199,6 +222,9 @@ def _build_prompt(
             "",
             "Top winning ads (most recent 30-day audit):",
             json.dumps(prompt_winners, ensure_ascii=False, separators=(",", ":")),
+            "",
+            "Recent rejected recipe patterns (avoid repeating these):",
+            json.dumps(prompt_rejections, ensure_ascii=False, separators=(",", ":")),
             "",
             f"Recommend {n_recipes} new ad concepts that build on the patterns",
             "in the winners but explore fresh angles. Match the brand voice.",
@@ -334,6 +360,24 @@ def _compact_analysis_for_prompt(analysis: Any) -> dict[str, Any]:
             compacted[key] = _clip_text(value, max_chars=WINNER_ANALYSIS_TEXT_MAX_CHARS)
         elif isinstance(value, (int, float, bool)):
             compacted[key] = value
+    return compacted
+
+
+def _compact_rejection_for_prompt(draft: dict) -> dict[str, Any]:
+    recipe = draft.get("recipe") if isinstance(draft.get("recipe"), dict) else {}
+    reason = _clip_text(draft.get("rejection_reason"), max_chars=REJECTION_TEXT_MAX_CHARS)
+    if not reason:
+        return {}
+    compacted: dict[str, Any] = {
+        "reason": reason,
+    }
+    for key in ("angle", "hook", "persona", "product", "format"):
+        value = recipe.get(key)
+        if value not in (None, "", [], {}):
+            compacted[key] = _clip_text(value, max_chars=REJECTION_TEXT_MAX_CHARS)
+    source_ids = draft.get("source_winner_ids") or recipe.get("source_winner_ids")
+    if isinstance(source_ids, list) and source_ids:
+        compacted["source_winner_ids"] = [str(value) for value in source_ids[:3]]
     return compacted
 
 
@@ -490,6 +534,14 @@ def _frames_for_winners(
     return [frame for group in frame_groups for frame in group]
 
 
+def _fetch_rejected_patterns(brand: str) -> list[dict]:
+    try:
+        return store.list_rejected_recipe_feedback(brand, limit=20)
+    except Exception:
+        # Feedback is advisory; Analyze should still run if local draft lookup fails.
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
@@ -505,10 +557,12 @@ def analyze_recipes(
 ) -> dict:
     winners = _fetch_top_winners(req.brand, req.top_n_winners, req.focus_product)
     profile = brand_profile_store.get_profile(req.brand) or {}
+    rejected_patterns = _fetch_rejected_patterns(req.brand)
 
     key = _cache_key(
         req.brand,
         winners,
+        rejected_patterns,
         req.top_n_winners,
         req.n_recipes,
         profile,
@@ -533,7 +587,7 @@ def analyze_recipes(
                     "path yet. Retry with include_video_frames=false."
                 ),
             )
-    prompt = _build_prompt(profile, winners, req.n_recipes)
+    prompt = _build_prompt(profile, winners, req.n_recipes, rejected_patterns)
 
     try:
         result = claude_client.call(
